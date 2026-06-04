@@ -1,0 +1,44 @@
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Dependency directories
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+coverage/
+**/dist/
+**/build/
+**/coverage/
+
+# TypeScript / bundler caches
+.tsbuildinfo
+**/*.tsbuildinfo
+.vite/
+**/.vite/
+.cache/
+**/.cache/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor settings
+.idea/
+.vscode/
+
+# Misc
+tmp/
+temp/

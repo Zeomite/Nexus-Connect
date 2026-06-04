@@ -1,0 +1,234 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* Communication Platform Design System */
+
+@layer base {
+  :root {
+    /* Base colors - Light mode (not primary focus) */
+    --background: 220 20% 97%;
+    --foreground: 220 30% 10%;
+    
+    --card: 0 0% 100%;
+    --card-foreground: 220 30% 10%;
+    
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 30% 10%;
+    
+    --primary: 174 72% 46%;
+    --primary-foreground: 0 0% 100%;
+    
+    --secondary: 220 20% 92%;
+    --secondary-foreground: 220 30% 20%;
+    
+    --muted: 220 15% 94%;
+    --muted-foreground: 220 15% 45%;
+    
+    --accent: 174 72% 46%;
+    --accent-foreground: 0 0% 100%;
+    
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+    
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 174 72% 46%;
+    
+    --radius: 0.75rem;
+    
+    /* Communication-specific colors */
+    --call-active: 142 76% 36%;
+    --call-end: 0 72% 51%;
+    --call-muted: 220 15% 45%;
+    --online: 142 76% 36%;
+    --busy: 0 72% 51%;
+    --away: 38 92% 50%;
+    
+    /* Glassmorphism */
+    --glass: 0 0% 100% / 0.7;
+    --glass-border: 0 0% 100% / 0.2;
+    
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(174 72% 46%), hsl(190 80% 50%));
+    --gradient-call: linear-gradient(135deg, hsl(142 76% 36%), hsl(160 84% 39%));
+    --gradient-end: linear-gradient(135deg, hsl(0 72% 51%), hsl(15 80% 55%));
+    --gradient-dark: linear-gradient(180deg, hsl(220 25% 12%), hsl(220 30% 8%));
+    
+    /* Shadows */
+    --shadow-sm: 0 2px 8px hsl(220 30% 10% / 0.08);
+    --shadow-md: 0 4px 20px hsl(220 30% 10% / 0.12);
+    --shadow-lg: 0 8px 40px hsl(220 30% 10% / 0.16);
+    --shadow-glow: 0 0 30px hsl(174 72% 46% / 0.3);
+    
+    --sidebar-background: 220 20% 97%;
+    --sidebar-foreground: 220 30% 20%;
+    --sidebar-primary: 174 72% 46%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 20% 92%;
+    --sidebar-accent-foreground: 220 30% 20%;
+    --sidebar-border: 220 15% 88%;
+    --sidebar-ring: 174 72% 46%;
+  }
+
+  .dark {
+    --background: 220 25% 8%;
+    --foreground: 220 15% 95%;
+    
+    --card: 220 25% 12%;
+    --card-foreground: 220 15% 95%;
+    
+    --popover: 220 25% 10%;
+    --popover-foreground: 220 15% 95%;
+    
+    --primary: 174 72% 50%;
+    --primary-foreground: 220 30% 8%;
+    
+    --secondary: 220 20% 18%;
+    --secondary-foreground: 220 15% 90%;
+    
+    --muted: 220 20% 15%;
+    --muted-foreground: 220 15% 55%;
+    
+    --accent: 174 72% 50%;
+    --accent-foreground: 220 30% 8%;
+    
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 0 0% 100%;
+    
+    --success: 142 76% 42%;
+    --success-foreground: 0 0% 100%;
+    
+    --warning: 38 92% 55%;
+    --warning-foreground: 0 0% 100%;
+    
+    --border: 220 20% 18%;
+    --input: 220 20% 18%;
+    --ring: 174 72% 50%;
+    
+    /* Communication-specific colors - Dark */
+    --call-active: 142 76% 42%;
+    --call-end: 0 72% 55%;
+    --call-muted: 220 15% 55%;
+    --online: 142 76% 42%;
+    --busy: 0 72% 55%;
+    --away: 38 92% 55%;
+    
+    /* Glassmorphism - Dark */
+    --glass: 220 25% 15% / 0.8;
+    --glass-border: 220 25% 25% / 0.3;
+    
+    /* Shadows - Dark */
+    --shadow-sm: 0 2px 8px hsl(220 30% 5% / 0.3);
+    --shadow-md: 0 4px 20px hsl(220 30% 5% / 0.4);
+    --shadow-lg: 0 8px 40px hsl(220 30% 5% / 0.5);
+    --shadow-glow: 0 0 40px hsl(174 72% 50% / 0.25);
+    
+    --sidebar-background: 220 25% 10%;
+    --sidebar-foreground: 220 15% 90%;
+    --sidebar-primary: 174 72% 50%;
+    --sidebar-primary-foreground: 220 30% 8%;
+    --sidebar-accent: 220 20% 15%;
+    --sidebar-accent-foreground: 220 15% 90%;
+    --sidebar-border: 220 20% 18%;
+    --sidebar-ring: 174 72% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: hsl(var(--glass));
+    backdrop-filter: blur(20px);
+    border: 1px solid hsl(var(--glass-border));
+  }
+  
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+  
+  .gradient-call {
+    background: var(--gradient-call);
+  }
+  
+  .gradient-end {
+    background: var(--gradient-end);
+  }
+  
+  .gradient-dark {
+    background: var(--gradient-dark);
+  }
+  
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+  
+  .text-gradient {
+    background: var(--gradient-primary);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  /* Status indicators */
+  .status-online {
+    @apply bg-[hsl(var(--online))];
+  }
+  
+  .status-busy {
+    @apply bg-[hsl(var(--busy))];
+  }
+  
+  .status-away {
+    @apply bg-[hsl(var(--away))];
+  }
+  
+  /* Call button states */
+  .call-button-active {
+    background: var(--gradient-call);
+    @apply shadow-glow;
+  }
+  
+  .call-button-end {
+    background: var(--gradient-end);
+  }
+  
+  /* Scrollbar styling */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full;
+  }
+  
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+}

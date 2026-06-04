@@ -1,0 +1,23 @@
+{
+  "name": "@nexus/notification-service",
+  "version": "1.0.0",
+  "description": "Email and push notification service",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@nexus/shared": "*",
+    "fastify": "^4.25.0",
+    "nodemailer": "^6.9.7",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/nodemailer": "^6.4.14",
+    "tsx": "^4.6.2",
+    "typescript": "^5.3.0"
+  }
+}

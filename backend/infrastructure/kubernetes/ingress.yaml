@@ -1,0 +1,126 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nexus-ingress
+  namespace: nexus
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/websocket-services: "chat-service,call-signaling-service"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+    - hosts:
+        - api.nexus.com
+      secretName: nexus-tls
+  rules:
+    - host: api.nexus.com
+      http:
+        paths:
+          # Auth Service
+          - path: /api/v1/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 3001
+
+          # User Service
+          - path: /api/v1/users
+            pathType: Prefix
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 3002
+
+          - path: /api/v1/search
+            pathType: Prefix
+            backend:
+              service:
+                name: user-service
+                port:
+                  number: 3002
+
+          # Chat Service
+          - path: /api/v1/chats
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: 3003
+
+          - path: /api/v1/messages
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: 3003
+
+          - path: /ws/chat
+            pathType: Prefix
+            backend:
+              service:
+                name: chat-service
+                port:
+                  number: 3003
+
+          # Call Signaling Service
+          - path: /api/v1/calls
+            pathType: Prefix
+            backend:
+              service:
+                name: call-signaling-service
+                port:
+                  number: 3004
+
+          - path: /ws/signaling
+            pathType: Prefix
+            backend:
+              service:
+                name: call-signaling-service
+                port:
+                  number: 3004
+
+          # Group Service
+          - path: /api/v1/groups
+            pathType: Prefix
+            backend:
+              service:
+                name: group-service
+                port:
+                  number: 3006
+
+          # Expense Service
+          - path: /api/v1/expenses
+            pathType: Prefix
+            backend:
+              service:
+                name: expense-service
+                port:
+                  number: 3007
+
+          - path: /api/v1/settlements
+            pathType: Prefix
+            backend:
+              service:
+                name: expense-service
+                port:
+                  number: 3007
+
+          # Call History Service
+          - path: /api/v1/history
+            pathType: Prefix
+            backend:
+              service:
+                name: call-history-service
+                port:
+                  number: 3009
