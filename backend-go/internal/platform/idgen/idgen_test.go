@@ -17,6 +17,19 @@ func TestUUID_IsValidV4Format(t *testing.T) {
 	assert.Equal(t, "4", string(id[14]), "version nibble must be 4")
 }
 
+func TestTimeOrderedUUID_HasValidShape(t *testing.T) {
+	id := idgen.TimeOrderedUUID()
+	assert.Len(t, id, 36)
+	parts := strings.Split(id, "-")
+	require.Len(t, parts, 5)
+	assert.Len(t, parts[0], 8)
+	assert.Len(t, parts[1], 4)
+	assert.Len(t, parts[2], 4)
+	assert.Equal(t, "7", string(parts[2][0]), "version nibble must be 7")
+	assert.Len(t, parts[3], 4)
+	assert.Len(t, parts[4], 12)
+}
+
 func TestUniqueTenDigitNumber_RetriesOnCollision(t *testing.T) {
 	attempts := 0
 	exists := func(ctx context.Context, number string) (bool, error) {
