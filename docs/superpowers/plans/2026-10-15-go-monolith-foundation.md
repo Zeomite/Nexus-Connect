@@ -191,6 +191,18 @@ func TestAppError_MarshalJSON_Shape(t *testing.T) {
 	assert.Equal(t, map[string]any{"email": "invalid"}, inner["details"])
 }
 
+func TestAppError_MarshalJSON_OmitsDetailsKeyWhenNil(t *testing.T) {
+	err := apperrors.Unauthorized("nope")
+	b, marshalErr := json.Marshal(err)
+	require.NoError(t, marshalErr)
+
+	var decoded map[string]map[string]any
+	require.NoError(t, json.Unmarshal(b, &decoded))
+
+	_, hasDetails := decoded["error"]["details"]
+	assert.False(t, hasDetails, "the \"details\" key must be absent (not null) when AppError.Details is nil — matches JSON.stringify dropping an undefined field in the original TS AppError.toJSON()")
+}
+
 func TestDuplicateEmail(t *testing.T) {
 	err := apperrors.DuplicateEmail()
 	assert.Equal(t, 409, err.StatusCode)
@@ -254,19 +266,28 @@ func (e *AppError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+// errorBody is the inner "error" object of the wire envelope. Details uses
+// `omitempty` deliberately: the original TypeScript AppError.toJSON() returns
+// a plain object literal with `details: this.details`, and most subclasses
+// never set `details` (it stays `undefined`) — JSON.stringify drops a key
+// whose value is undefined entirely, so the real wire shape for e.g.
+// UnauthorizedError is {"error":{"code":"UNAUTHORIZED","message":"..."}},
+// with NO "details" key at all, not `"details":null`. Without `omitempty`,
+// Go's encoding/json would serialize a nil map as `"details":null`, which is
+// a different (and wrong) wire shape for every one of the 15 constructors
+// that don't pass details — exactly the kind of drift this task exists to
+// prevent, so this is not a style preference, it's a parity requirement.
+type errorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
 func (e *AppError) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Error struct {
-			Code    string         `json:"code"`
-			Message string         `json:"message"`
-			Details map[string]any `json:"details"`
-		} `json:"error"`
+		Error errorBody `json:"error"`
 	}{
-		Error: struct {
-			Code    string         `json:"code"`
-			Message string         `json:"message"`
-			Details map[string]any `json:"details"`
-		}{Code: e.Code, Message: e.Message, Details: e.Details},
+		Error: errorBody{Code: e.Code, Message: e.Message, Details: e.Details},
 	})
 }
 
