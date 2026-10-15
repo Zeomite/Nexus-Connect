@@ -2485,6 +2485,10 @@ git add backend-go/internal/platform/auth backend-go/go.mod backend-go/go.sum
 git commit -m "backend-go: add platform/auth (JWT, bcrypt, chi middleware with TokenExpired/InvalidToken distinction)"
 ```
 
+**Plan correction (found during implementation/review, not in the original text above):** `TokenPayload`'s interface spec above only had `UserID`/`Email`, but the actual original (`backend/packages/shared/src/types/user.ts`'s `TokenPayload` interface, populated in `auth-service/src/services/auth.service.ts:148`) has a third field, `uniqueNumber: string`. Dropping it would silently lose data on any token this package round-trips once wired into the real auth domain module. Added `UniqueNumber string \`json:"uniqueNumber"\`` to the struct; `TestGenerateAndVerifyAccessToken_RoundTrips` et al. updated to set it.
+
+Also, `VerifyToken`'s keyfunc now checks `t.Method.(*jwt.SigningMethodHMAC)` before returning the secret, rejecting any token whose header claims a non-HMAC algorithm — not because this single-algorithm (HS256-only) deployment is actually exploitable without it (golang-jwt's `SigningMethodRSA`/`SigningMethodECDSA` already reject a `[]byte` key via their own type assertions, and `alg: none` requires the keyfunc to explicitly opt in via `jwt.UnsafeAllowNoneSignatureType`, which it never does), but because the library's own README carries this as a SECURITY NOTICE ("validate the alg presented is what you expect") and the check is free. Added `TestVerifyToken_RejectsNoneAlgorithm` as a regression test for the library's existing protection, documented in its comment as not proof of a bug this task fixes.
+
 ---
 
 ## Task 12: `internal/platform/validate` — struct validation
