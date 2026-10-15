@@ -3700,3 +3700,23 @@ func TestGracefulShutdown_DrainsInFlightRequest(t *testing.T) {
 This supersedes the plain `app.RequireStop()` in the original Step 6 — run both tests together as part of that step's verification.
 
 **Scope check:** Confirmed — no domain module logic anywhere in this plan; it produces exactly spec §4–§5's foundation and nothing more.
+
+---
+
+## Task 17: Final `go mod tidy` pass (plan correction, added during Task 7 review)
+
+**Why this exists:** Step 5 of Task 1 says `go mod tidy` "becomes safe to run once real code imports these packages, starting from Task 2 onward" — that's true *per package*, but `go mod tidy` operates on the whole module, not one package at a time. Until every pinned dependency from Task 1 Step 3 has at least one importer somewhere in the tree, running `tidy` strips every *other* still-unimported package right back out of `go.mod`/`go.sum` — the identical failure mode Task 1 Step 5 was written to avoid, just triggered by a later task instead of Task 1 itself. Concretely: as of Task 7, `jwt`, `x/crypto` (bcrypt), `validator`, `migrate`, `chi`, and `fx` have zero importers (production or test) anywhere in the module, so `go mod tidy` run at any point before Tasks 11–15 land would delete all six.
+
+Symptom already observed during Task 7's review: every entry in `go.mod`, including packages with real importers for several tasks now (`pgx/v5`, `testify`, `testcontainers-go` + its `postgres`/`redis` modules, `redis/go-redis/v9`), is still marked `// indirect` — nobody has been able to safely correct these markers task-by-task without the whole-module tidy risk above.
+
+**Resolution:** do not run `go mod tidy` during Tasks 8–16. After Task 16 is committed (every pinned dependency now has a real importer), run exactly once:
+
+```bash
+cd backend-go && go mod tidy && go build ./... && go vet ./... && go test ./... && go test -tags=integration ./... && go test -race ./...
+```
+
+Expected: `go.mod`/`go.sum` churn only in `// indirect` markers flipping to direct (or disappearing) for packages with real importers — no `require` line should be *removed* at this point, since Task 16 is the last task and every pinned package should have landed an importer by Tasks 2–16. If `go mod tidy` removes a `require` line here, stop and investigate which task's package never got imported (a sign that task's implementation is incomplete, not that the dependency was unnecessary) before committing.
+
+- [ ] **Step 1:** Run the verification command block above.
+- [ ] **Step 2:** `git diff backend-go/go.mod backend-go/go.sum` — confirm only `// indirect` markers changed, no `require` lines removed.
+- [ ] **Step 3:** Commit: `git add backend-go/go.mod backend-go/go.sum && git commit -m "backend-go: tidy go.mod now that every pinned dependency has an importer"`
