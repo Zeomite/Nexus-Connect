@@ -42,3 +42,6 @@ pnpm-debug.log*
 # Misc
 tmp/
 temp/
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
