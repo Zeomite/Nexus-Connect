@@ -19,19 +19,17 @@ func (e *AppError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+type errorBody struct {
+	Code    string         `json:"code"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
 func (e *AppError) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
-		Error struct {
-			Code    string         `json:"code"`
-			Message string         `json:"message"`
-			Details map[string]any `json:"details"`
-		} `json:"error"`
+		Error errorBody `json:"error"`
 	}{
-		Error: struct {
-			Code    string         `json:"code"`
-			Message string         `json:"message"`
-			Details map[string]any `json:"details"`
-		}{Code: e.Code, Message: e.Message, Details: e.Details},
+		Error: errorBody{Code: e.Code, Message: e.Message, Details: e.Details},
 	})
 }
 

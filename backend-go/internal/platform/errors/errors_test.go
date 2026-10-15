@@ -31,6 +31,18 @@ func TestAppError_MarshalJSON_Shape(t *testing.T) {
 	assert.Equal(t, map[string]any{"email": "invalid"}, inner["details"])
 }
 
+func TestAppError_MarshalJSON_OmitsDetailsKeyWhenNil(t *testing.T) {
+	err := apperrors.Unauthorized("nope")
+	b, marshalErr := json.Marshal(err)
+	require.NoError(t, marshalErr)
+
+	var decoded map[string]map[string]any
+	require.NoError(t, json.Unmarshal(b, &decoded))
+
+	_, hasDetails := decoded["error"]["details"]
+	assert.False(t, hasDetails, "the \"details\" key must be absent (not null) when AppError.Details is nil — matches JSON.stringify dropping an undefined field in the original TS AppError.toJSON()")
+}
+
 func TestDuplicateEmail(t *testing.T) {
 	err := apperrors.DuplicateEmail()
 	assert.Equal(t, 409, err.StatusCode)
