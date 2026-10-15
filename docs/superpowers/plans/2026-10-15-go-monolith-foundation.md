@@ -2127,6 +2127,14 @@ git add backend-go/internal/platform/realtime
 git commit -m "backend-go: add platform/realtime (real Redis pub/sub fan-out, fixes original's dead subscription)"
 ```
 
+**Plan correction (found during implementation/review, not in the original text above):** Step 3's `Close()` deadlocks the first time it's called while a subscription is still active — it holds `f.mu.Lock()` for its whole loop, and the `unsubscribe` closure it calls re-acquires `f.mu` to delete its own map entry, which is a self-deadlock on Go's non-reentrant `sync.Mutex`. None of the 3 tests above catch this: in every one, `unsubscribe()` already ran (via defer order or an explicit call) before `Close()` did, so `f.subs` was always empty by the time `Close()` iterated it. This matters because Task 15's fx `OnStop` shutdown hook is exactly the call site that calls `Close()` with subscriptions still active.
+
+Two more defects surfaced by review once this was being looked at closely:
+- `f.subs` keyed by channel name meant two independent `Subscribe` calls on the same channel clobbered each other's bookkeeping — unsubscribing one could silently drop the other's entry, leaking its goroutine + Redis connection past `Close()`.
+- A `Subscribe` call racing `Close()` could end up neither torn down by `Close()` (if it registered after `Close()`'s snapshot) nor self-cleaning.
+
+Fix actually implemented: `f.subs` is keyed by a monotonic per-call `uint64` ID instead of channel name; `Close()` copies the handler closures out of the map under lock, releases the lock, then calls each outside the lock; `Subscribe` checks a new `closed bool` (guarded by `f.mu`) once at entry and again right before registering, self-unsubscribing and returning the new `ErrClosed` if `Close()` won the race; and the forwarding goroutine now calls `unsubscribe()` itself on `subCtx.Done()` instead of returning bare, so cancelling the caller's `ctx` alone no longer leaks the Redis pubsub connection. Added tests: `TestClose_TearsDownActiveSubscriptionWithoutDeadlock`, `TestSubscribe_AfterCloseReturnsError`, `TestSubscribe_SameChannelTwiceIndependentUnsubscribe`. One interleaving remains untested — the second `closed` check's race window is microseconds wide with no I/O in between, so forcing it open deterministically would require a test-only synchronization hook in production code; verified correct by two independent reviews reasoning through the mutex semantics directly instead.
+
 ---
 
 ## Task 11: `internal/platform/auth` — JWT, bcrypt, auth middleware
