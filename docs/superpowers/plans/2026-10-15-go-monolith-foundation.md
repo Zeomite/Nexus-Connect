@@ -2206,6 +2206,7 @@ Expected: FAIL — package doesn't exist.
 package auth
 
 import (
+	"errors"
 	"time"
 
 	apperrors "nexus-connect/backend-go/internal/platform/errors"
@@ -2264,7 +2265,7 @@ func VerifyToken(tokenString, secret string) (TokenPayload, error) {
 	})
 
 	if err != nil {
-		if isExpiredError(err) {
+		if errors.Is(err, jwt.ErrTokenExpired) {
 			return TokenPayload{}, apperrors.TokenExpired()
 		}
 		return TokenPayload{}, apperrors.InvalidToken()
@@ -2275,28 +2276,9 @@ func VerifyToken(tokenString, secret string) (TokenPayload, error) {
 
 	return c.TokenPayload, nil
 }
-
-func isExpiredError(err error) bool {
-	return jwt.ErrTokenExpired != nil && errorsIs(err, jwt.ErrTokenExpired)
-}
-
-// errorsIs is a tiny local alias to avoid importing the stdlib "errors"
-// package solely for one call and colliding with this module's own
-// internal/platform/errors package name in reviewers' heads.
-func errorsIs(err, target error) bool {
-	for err != nil {
-		if err == target {
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
-}
 ```
+
+Note: use the stdlib `"errors"` package's `errors.Is` directly (add it to the import block alongside the aliased `apperrors "nexus-connect/backend-go/internal/platform/errors"` — the two don't collide, one is the bare stdlib name and the other is explicitly aliased). Do not hand-roll an unwrap loop; `jwt.ErrTokenExpired` is a sentinel error `jwt.ParseWithClaims` wraps, and `errors.Is` is the correct, idiomatic way to check for it.
 
 - [ ] **Step 4: Run the token tests to verify they pass**
 
@@ -3237,7 +3219,7 @@ import (
 	"fmt"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres" // registers the "postgres" driver via its init()
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
@@ -3271,9 +3253,9 @@ func Run(dsn string) error {
 	}
 	return nil
 }
-
-var _ = postgres.Driver{} // ensures the postgres driver is linked in for its side-effect init()
 ```
+
+Note: the `database/postgres` import is blank (`_`) because nothing in this file references any of its exported identifiers directly — its registration of the `"postgres"` driver with `golang-migrate`'s internal registry happens entirely via that package's own `init()`, which a blank import still triggers. Do not invent a dummy reference like `postgres.Driver{}` to "use" the import instead — that package doesn't export a type called `Driver` (the `Driver` interface lives in `golang-migrate/migrate/v4/database`, not in the `postgres` subpackage), so it wouldn't compile, and it isn't necessary anyway.
 
 - [ ] **Step 6: Run the test to verify it passes**
 
@@ -3390,8 +3372,26 @@ var Module = fx.Module("platform",
 		provideFanout,
 		provideRouter,
 	),
-	fx.Invoke(registerHTTPServer),
+	fx.Invoke(
+		registerHTTPServer,
+		forceEventsAndRealtimeConstruction,
+	),
 )
+
+// forceEventsAndRealtimeConstruction exists only because fx builds a
+// constructor's value lazily — only when something in the graph actually
+// depends on it. Nothing in this Foundation plan's own fx.Invoke list
+// needs *events.Bus or *realtime.Fanout yet (no domain module exists to
+// subscribe to either), so without this, fx would never call
+// provideEventBus/provideFanout at all, and provideFanout's OnStop
+// lifecycle hook would never register. Taking both as plain parameters
+// here forces fx to construct them (and their lifecycle hooks) as part of
+// app startup, even though their only "consumer" right now is this no-op
+// function. The first domain module to add a real subscriber (e.g. `chat`
+// requesting *events.Bus in its own fx.Invoke) makes this function
+// redundant but harmless — fx providers are constructed at most once
+// regardless of how many places request them.
+func forceEventsAndRealtimeConstruction(*events.Bus, *realtime.Fanout) {}
 
 func provideLogger() *slog.Logger {
 	return logger.New("nexus-backend-go")
