@@ -485,7 +485,7 @@ func TestStore_ExistsByEmail_FalseThenTrueAfterInsert(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, exists)
 
-	require.NoError(t, store.InsertUser(ctx, "user-1", "new@example.com", "hash", "1234567890", "Jane"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000001", "new@example.com", "hash", "1234567890", "Jane"))
 
 	exists, err = store.ExistsByEmail(ctx, "new@example.com")
 	require.NoError(t, err)
@@ -500,7 +500,7 @@ func TestStore_ExistsByUniqueNumber_FalseThenTrueAfterInsert(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, exists)
 
-	require.NoError(t, store.InsertUser(ctx, "user-2", "num@example.com", "hash", "9998887770", "Num"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000002", "num@example.com", "hash", "9998887770", "Num"))
 
 	exists, err = store.ExistsByUniqueNumber(ctx, "9998887770")
 	require.NoError(t, err)
@@ -510,7 +510,7 @@ func TestStore_ExistsByUniqueNumber_FalseThenTrueAfterInsert(t *testing.T) {
 func TestStore_InsertUser_DefaultsEmailVerifiedFalse(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-3", "unverified@example.com", "hash", "1112223334", "Unverified"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000003", "unverified@example.com", "hash", "1112223334", "Unverified"))
 
 	user, err := store.FindForLogin(ctx, "unverified@example.com")
 	require.NoError(t, err)
@@ -528,12 +528,12 @@ func TestStore_FindForLogin_NilWhenNotFound(t *testing.T) {
 func TestStore_FindForLogin_ReturnsAllFields(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-4", "full@example.com", "the-hash", "5551112223", "Full Name"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000004", "full@example.com", "the-hash", "5551112223", "Full Name"))
 
 	user, err := store.FindForLogin(ctx, "full@example.com")
 	require.NoError(t, err)
 	require.NotNil(t, user)
-	assert.Equal(t, "user-4", user.ID)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000004", user.ID)
 	assert.Equal(t, "full@example.com", user.Email)
 	assert.Equal(t, "the-hash", user.PasswordHash)
 	assert.Equal(t, "5551112223", user.UniqueNumber)
@@ -551,9 +551,9 @@ func TestStore_FindEmailVerified_NilWhenNotFound(t *testing.T) {
 func TestStore_MarkEmailVerified_UpdatesRowAndReportsFound(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-5", "verify-me@example.com", "hash", "2223334445", "VerifyMe"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000005", "verify-me@example.com", "hash", "2223334445", "VerifyMe"))
 
-	found, err := store.MarkEmailVerified(ctx, "user-5")
+	found, err := store.MarkEmailVerified(ctx, "00000000-0000-0000-0000-000000000005")
 	require.NoError(t, err)
 	assert.True(t, found)
 
@@ -565,7 +565,7 @@ func TestStore_MarkEmailVerified_UpdatesRowAndReportsFound(t *testing.T) {
 
 func TestStore_MarkEmailVerified_ReportsNotFoundForMissingUser(t *testing.T) {
 	store := startStore(t)
-	found, err := store.MarkEmailVerified(context.Background(), "does-not-exist")
+	found, err := store.MarkEmailVerified(context.Background(), "00000000-0000-0000-0000-000000000099")
 	require.NoError(t, err)
 	assert.False(t, found)
 }
@@ -573,9 +573,9 @@ func TestStore_MarkEmailVerified_ReportsNotFoundForMissingUser(t *testing.T) {
 func TestStore_UpdatePassword_ChangesHashAndReportsFound(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-6", "pw@example.com", "old-hash", "3334445556", "PwUser"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000006", "pw@example.com", "old-hash", "3334445556", "PwUser"))
 
-	found, err := store.UpdatePassword(ctx, "user-6", "new-hash")
+	found, err := store.UpdatePassword(ctx, "00000000-0000-0000-0000-000000000006", "new-hash")
 	require.NoError(t, err)
 	assert.True(t, found)
 
@@ -588,8 +588,8 @@ func TestStore_UpdatePassword_ChangesHashAndReportsFound(t *testing.T) {
 func TestStore_UpdateLastSeen_Succeeds(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-7", "lastseen@example.com", "hash", "4445556667", "LastSeen"))
-	assert.NoError(t, store.UpdateLastSeen(ctx, "user-7"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000007", "lastseen@example.com", "hash", "4445556667", "LastSeen"))
+	assert.NoError(t, store.UpdateLastSeen(ctx, "00000000-0000-0000-0000-000000000007"))
 }
 
 func TestStore_FindIDByEmail_NilWhenNotFound(t *testing.T) {
@@ -602,12 +602,12 @@ func TestStore_FindIDByEmail_NilWhenNotFound(t *testing.T) {
 func TestStore_FindIDByEmail_ReturnsIDWhenFound(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
-	require.NoError(t, store.InsertUser(ctx, "user-8", "findid@example.com", "hash", "6667778889", "FindID"))
+	require.NoError(t, store.InsertUser(ctx, "00000000-0000-0000-0000-000000000008", "findid@example.com", "hash", "6667778889", "FindID"))
 
 	id, err := store.FindIDByEmail(ctx, "findid@example.com")
 	require.NoError(t, err)
 	require.NotNil(t, id)
-	assert.Equal(t, "user-8", *id)
+	assert.Equal(t, "00000000-0000-0000-0000-000000000008", *id)
 }
 ```
 
@@ -770,6 +770,8 @@ cd backend-go && go build ./... && go vet ./... && go test -tags=integration ./i
 git add backend-go/internal/auth/store.go backend-go/internal/auth/store_test.go
 git commit -m "backend-go/auth: add Store (Postgres queries for register/login/verify/reset)"
 ```
+
+**Plan correction (found during implementation, not in the original text above):** the test literals above already reflect a fix — the original draft used plain strings (`"user-1"` through `"user-8"`, `"does-not-exist"`) as user IDs, but `users.id` is `UUID` type (per the foundation plan's already-committed migration schema), and Postgres rejects non-UUID-syntax values with `SQLSTATE 22P02` — confirmed via the actual failing test output, not guessed. Every test literal above already uses a syntactically-valid dummy UUID (`00000000-0000-0000-0000-00000000000N`) instead. The real caller (`Service.Register`, Task 7) always generates a genuine UUID via `idgen.TimeOrderedUUID()`, so this only affected test fixtures, not `Store`'s own implementation.
 
 ---
 
