@@ -109,7 +109,13 @@ func (s *Service) VerifyResetCode(ctx context.Context, email, code string) (stri
 	return resetToken, nil
 }
 
-// UpdatePassword mirrors AuthService.updatePassword.
+// UpdatePassword mirrors AuthService.updatePassword, including a gap the
+// original documents and leaves unfixed with its own inline comment
+// ("Invalidate all refresh tokens for this user... In production, you'd
+// want to track all refresh tokens per user"): a password change here does
+// not revoke any refresh token issued before it. Faithfully preserved, not
+// a new regression — see Task 5's STARTTLS TODO(gap) for the project's
+// established convention on gaps like this.
 func (s *Service) UpdatePassword(ctx context.Context, email, resetToken, newPassword string) error {
 	email = strings.ToLower(email)
 
