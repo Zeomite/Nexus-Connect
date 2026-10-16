@@ -81,4 +81,5 @@ func TestKeys_MatchExpectedFormat(t *testing.T) {
 	assert.Equal(t, "status:user-1", cache.UserStatusKey("user-1"))
 	assert.Equal(t, "ratelimit:login:1.2.3.4", cache.RateLimitKey("1.2.3.4", "login"))
 	assert.Equal(t, "typing:chat-1:user-1", cache.TypingIndicatorKey("chat-1", "user-1"))
+	assert.Equal(t, "password_reset_verified:user@example.com", cache.PasswordResetVerifiedKey("user@example.com"))
 }
