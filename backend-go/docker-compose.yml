@@ -1,0 +1,44 @@
+# Runs the Go monolith against the SAME Postgres/Redis containers started by
+# ../backend/docker-compose.yml, since both stacks share one database during
+# the module-by-module transition (spec §6). Start that stack first:
+#   (cd ../backend && docker-compose up -d postgres redis)
+# then:
+#   docker-compose up --build
+#
+# The external network name below, "backend_nexus-network", relies on Compose's
+# default project-naming convention (<directory-basename>_<network-key>) for
+# ../backend/docker-compose.yml's unnamed "nexus-network" — i.e. it assumes
+# that repo was cloned into (or is otherwise run from) a directory literally
+# named "backend", with no COMPOSE_PROJECT_NAME override and no -p flag. If
+# yours isn't, either rename this file's "name:" below to match, or pin
+# COMPOSE_PROJECT_NAME=backend (or `docker-compose -p backend ...`) when
+# starting ../backend's stack so the resulting network name stays predictable.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nexus-backend-go
+    ports:
+      - "8090:8080"
+    environment:
+      PORT: 8080
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: nexus
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?must be set, no hardcoded fallback}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?must be set, no hardcoded fallback}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    networks:
+      - default
+      - nexus-network
+
+networks:
+  nexus-network:
+    external: true
+    name: backend_nexus-network

@@ -3676,6 +3676,10 @@ git add backend-go/Dockerfile backend-go/docker-compose.yml backend-go/.dockerig
 git commit -m "backend-go: add Dockerfile and docker-compose entry, joining backend/'s existing network"
 ```
 
+**Plan correction (found during implementation/review, not in the original text above):** beyond the syntactic `docker-compose config --quiet` check Step 4 calls for, this was also verified end-to-end for real: `docker build` actually succeeds; the built image, run as a container against ad hoc Postgres/Redis on a custom network, boots (confirmed via its fx diagnostic log that `provideDB` genuinely runs inside a real container, not just under `go test` — the Task 15 fix holds here too); `/health` responds; `psql \dt` confirms all 12 domain tables plus `schema_migrations` exist (migrations really ran); the container's own `HEALTHCHECK` directive transitions from `starting` to `healthy`; and `docker stop` triggers all `OnStop` hooks in order (fanout → cache → db → HTTP server) with the container exiting in ~0.14s, well under the SIGKILL grace period.
+
+Two gaps fixed from review: `.dockerignore` was missing `.env` (the production stage never copies it, but `COPY . .` would still pull a locally-created one into the builder layer) — added. And the external network's name, `backend_nexus-network`, relies entirely on Compose's directory-basename-naming convention holding (i.e. `../backend` being run from a directory literally named `backend`, with no `COMPOSE_PROJECT_NAME`/`-p` override) — true today, but `backend/README.md`'s own quick-start instructions imply cloning into a differently-named directory, which would silently break this assumption. Documented the dependency and the fix (pin `COMPOSE_PROJECT_NAME=backend` or rename this file's `name:` to match) directly in `docker-compose.yml`'s header comment rather than relying on convention alone.
+
 ---
 
 ## Plan self-review
