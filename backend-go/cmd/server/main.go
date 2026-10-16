@@ -1,7 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"nexus-connect/backend-go/internal/platform"
+
+	"go.uber.org/fx"
+)
 
 func main() {
-	fmt.Println("nexus-connect backend-go: foundation scaffolding")
+	fx.New(platform.Module).Run()
 }
