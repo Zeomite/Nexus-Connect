@@ -32,6 +32,12 @@ type Config struct {
 
 	CORSOrigins []string
 	NodeEnv     string
+
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUser     string
+	SMTPPassword string
+	EmailFrom    string
 }
 
 func Load() (Config, error) {
@@ -62,6 +68,12 @@ func Load() (Config, error) {
 
 		CORSOrigins: envList("CORS_ORIGINS", []string{"http://localhost:3000"}),
 		NodeEnv:     envStr("NODE_ENV", "development"),
+
+		SMTPHost:     envStr("SMTP_HOST", "smtp.gmail.com"),
+		SMTPPort:     envInt("SMTP_PORT", 587),
+		SMTPUser:     envStr("SMTP_USER", ""),
+		SMTPPassword: envStr("SMTP_PASSWORD", ""),
+		EmailFrom:    envStr("EMAIL_FROM", "noreply@nexus.com"),
 	}
 
 	if cfg.JWTAccessSecret == "" || cfg.JWTRefreshSecret == "" {

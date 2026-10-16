@@ -95,3 +95,16 @@ func TestRedisAddr_Format(t *testing.T) {
 	cfg := config.Config{RedisHost: "cache", RedisPort: 6380}
 	assert.Equal(t, "cache:6380", cfg.RedisAddr())
 }
+
+func TestLoad_AppliesSMTPDefaults(t *testing.T) {
+	t.Setenv("JWT_ACCESS_SECRET", "test-access-secret-at-least-32-chars")
+	t.Setenv("JWT_REFRESH_SECRET", "test-refresh-secret-at-least-32-chars")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+
+	assert.Equal(t, "smtp.gmail.com", cfg.SMTPHost)
+	assert.Equal(t, 587, cfg.SMTPPort)
+	assert.Equal(t, "", cfg.SMTPUser)
+	assert.Equal(t, "noreply@nexus.com", cfg.EmailFrom)
+}
