@@ -1168,9 +1168,12 @@ func TestRegister_DuplicateEmail_Returns409AndFirstUsersDataSurvives(t *testing.
 	require.True(t, ok)
 	assert.Equal(t, "DUPLICATE_EMAIL", appErr.Code)
 
-	// The rejected second attempt must not have overwritten anything: the
-	// first user's own row — same ID, same display name — must be exactly
-	// what Register originally wrote.
+	// Register's existence check short-circuits before InsertUser is ever
+	// called on the duplicate attempt, so this doesn't prove InsertUser
+	// itself is non-destructive (e.g. not an upsert) — it confirms the real
+	// protection, that ExistsByEmail's pre-check actually stops the second
+	// write from being attempted at all: the first user's row — same ID,
+	// same display name — is exactly what the first Register call wrote.
 	row, err := store.FindForLogin(ctx, "dup@example.com")
 	require.NoError(t, err)
 	require.NotNil(t, row)
