@@ -2959,6 +2959,15 @@ git add backend-go/internal/platform/httpserver backend-go/go.mod backend-go/go.
 git commit -m "backend-go: add platform/httpserver (chi router, error-mapping middleware, security headers)"
 ```
 
+**Plan correction (found during implementation/review, not in the original text above):** four issues fixed before this was ever run against the plan's literal code:
+
+1. Step 4's `recoverer` hardcoded the panic-recovery body as a literal `{"error":{...,"details":null}}` string — contradicting Task 2's own `omitempty` contract (the key must be absent, never literal null). Replaced with a shared `writeAppError` helper (now used by both `Wrap` and `recoverer`) that marshals through the real `AppError.MarshalJSON()`.
+2. Step 4 registered middleware as `RequestID, recoverer, securityHeaders, cors` — `recoverer` wasn't outermost, so a panic inside `RequestID` itself would propagate uncaught. Reordered to `recoverer, RequestID, securityHeaders, cors` (confirmed via chi v5.1.0's `chain.go`: the first `Use()` call becomes the outermost wrapper).
+3. Neither `Wrap` nor the original `recoverer` guarded against double-writing a response: if a handler's returned error or panic happened *after* it already started writing its own response (e.g., `WriteJSON`'s header succeeded but body-encode then failed), the old code unconditionally tried to write a second, different status+body on top. Added a shared `statusTrackingWriter` (records whether `WriteHeader`/`Write` already ran) that both `Wrap` and `recoverer` check first. Known residual gap, not fixed (nothing in this plan exercises it): embedding `http.ResponseWriter` promotes `Flusher`/`Hijacker` untouched, so a streaming/SSE/websocket handler calling `Flush()`/`Hijack()` without a prior `Write` would leave `started` false — revisit before building one; this reimplementation also lacks chi's own `Recoverer`'s `Connection: Upgrade` guard.
+4. The non-`AppError` fallback path sent the raw error's `.Error()` text directly to the client as the response `message` (`apperrors.Internal(err.Error())`) — a real information-disclosure regression from the actual original (`backend/services/auth-service/src/server.ts`'s error handler logs the full error server-side but always sends a generic client-facing message, never `error.message`). Changed to `apperrors.Internal("")`, which falls back to AppError's own safe default; the real error is still logged server-side via the existing `log.Error(...)` call using the un-redacted `err`.
+
+Added tests: `TestRecoverer_PanicResponseOmitsDetailsKey`, `TestRecoverer_PanicAfterResponseAlreadyStartedDoesNotCorruptIt`, `TestWrap_ErrorAfterResponseAlreadyStartedDoesNotCorruptIt`, `TestWrap_PlainErrorDoesNotLeakRawErrorTextToClient`.
+
 ---
 
 ## Task 14: `internal/platform/migrations` — golang-migrate wiring
