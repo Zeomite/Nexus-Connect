@@ -15,6 +15,7 @@
 ## Global Constraints
 
 - Go module path prefix for this module: `nexus-connect/backend-go/internal/auth`. Package name is `auth` — this collides with the already-existing `internal/platform/auth` package name, so **every file in this module that imports `internal/platform/auth` must alias it `platformauth`** (matching the project's existing alias convention for `internal/platform/errors` → `apperrors`).
+- **Every `Service` method that takes an email must lowercase it with `strings.ToLower` as its first line**, before using that email in any DB lookup, cache key, or event payload. This is not a style preference — `auth.service.ts` does `email.toLowerCase()` at every single one of its 16 email-touching call sites (grep confirms zero exceptions), so DB rows, cache keys, and lookups are all keyed by the lowercased form in the original. A Go port that normalizes inconsistently (or not at all) breaks login for anyone who typed their email differently at signup vs. sign-in — a common real-world bug class, not a theoretical one. `RefreshTokens` is the one exception that needs no fix: it propagates an already-normalized email forward from the JWT payload `Login` issued, never taking a fresh email from a caller.
 - Routes mount at `/api/v1/auth` — exact prefix the existing `backend/services/auth-service` uses (confirmed in its `server.ts`: `server.register(authRoutes, { prefix: '/api/v1/auth' })`). The frontend's API client depends on this path; it requires zero changes per spec §1.
 - bcrypt cost 12 — already enforced inside `platform/auth.HashPassword`; this module never re-implements hashing, only calls it.
 - No Kafka. Where the original publishes to `KafkaTopics.USER_EVENTS`, this module publishes the equivalent typed event to the already-built `*events.Bus` (Task 9 of the foundation plan). No subscriber exists yet — that's `notification`'s future module (spec §3 item 7) — publishing with zero subscribers is a documented no-op, not an error (`platform/events.Bus.Publish`'s own tests already cover this).
@@ -1234,6 +1235,42 @@ func TestResendVerificationEmail_AlreadyVerifiedEmail_ReturnsNilAndDoesNotIssueN
 	assert.NoError(t, svc.ResendVerificationEmail(ctx, "already-verified@example.com"))
 }
 
+// TestRegister_EmailIsCaseInsensitive pins a systemic normalization rule the
+// original applies at every single email-touching call site (grep confirms
+// 16 occurrences of email.toLowerCase() across auth.service.ts, zero
+// exceptions): registering with mixed-case must store/key everything by the
+// lowercased form, so a later lookup with a differently-cased (but
+// equivalent) email still finds it. Without this, a user who typed
+// "User@Example.com" at signup could never log in typing
+// "user@example.com".
+func TestRegister_EmailIsCaseInsensitive(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	_, err := svc.Register(ctx, auth.RegisterInput{
+		Email: "MixedCase@Example.COM", Password: "SecureP@ss123", DisplayName: "Mixed",
+	})
+	require.NoError(t, err)
+
+	// The verification code was stored under the lowercased key — looking it
+	// up (and verifying) with a different casing than either the original
+	// registration or each other must still work.
+	code, err := svc.PeekVerificationCodeForTest(ctx, "mixedcase@example.com")
+	require.NoError(t, err)
+	require.NoError(t, svc.VerifyEmail(ctx, "MIXEDCASE@EXAMPLE.COM", code))
+
+	// A second registration attempt with yet another casing of the same
+	// address must be rejected as a duplicate, proving ExistsByEmail checked
+	// against the normalized form too.
+	_, err = svc.Register(ctx, auth.RegisterInput{
+		Email: "mixedCase@example.com", Password: "AnotherP@ss456", DisplayName: "Dup",
+	})
+	require.Error(t, err)
+	appErr, ok := apperrors.As(err)
+	require.True(t, ok)
+	assert.Equal(t, "DUPLICATE_EMAIL", appErr.Code)
+}
+
 func stripRedisScheme(connStr string) string {
 	const prefix = "redis://"
 	if len(connStr) >= len(prefix) && connStr[:len(prefix)] == prefix {
@@ -1260,6 +1297,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"nexus-connect/backend-go/internal/platform/cache"
@@ -1310,6 +1348,8 @@ type verificationCodeRecord struct {
 // Register mirrors AuthService.register in
 // backend/services/auth-service/src/services/auth.service.ts.
 func (s *Service) Register(ctx context.Context, input RegisterInput) (RegisterResult, error) {
+	input.Email = strings.ToLower(input.Email)
+
 	exists, err := s.store.ExistsByEmail(ctx, input.Email)
 	if err != nil {
 		return RegisterResult{}, err
@@ -1358,6 +1398,8 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (RegisterRe
 
 // VerifyEmail mirrors AuthService.verifyEmail.
 func (s *Service) VerifyEmail(ctx context.Context, email, code string) error {
+	email = strings.ToLower(email)
+
 	stored, err := s.cache.Get(ctx, cache.EmailVerificationKey(email))
 	if err != nil {
 		if err == cache.ErrNotFound {
@@ -1395,6 +1437,8 @@ func (s *Service) VerifyEmail(ctx context.Context, email, code string) error {
 // including its anti-enumeration contract: it always returns nil, whether
 // the email doesn't exist, is already verified, or genuinely got a new code.
 func (s *Service) ResendVerificationEmail(ctx context.Context, email string) error {
+	email = strings.ToLower(email)
+
 	lookup, err := s.store.FindEmailVerified(ctx, email)
 	if err != nil {
 		return err
@@ -1438,6 +1482,7 @@ func randomSixDigitCode() (string, error) {
 // all in the external auth_test package, same convention as
 // EmailSender.SetSendFuncForTest.
 func (s *Service) PeekVerificationCodeForTest(ctx context.Context, email string) (string, error) {
+	email = strings.ToLower(email)
 	stored, err := s.cache.Get(ctx, cache.EmailVerificationKey(email))
 	if err != nil {
 		return "", err
@@ -1453,7 +1498,7 @@ func (s *Service) PeekVerificationCodeForTest(ctx context.Context, email string)
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd backend-go && go test -tags=integration ./internal/auth/... -v -run 'TestRegister|TestVerifyEmail|TestResendVerificationEmail'`
-Expected: PASS, all 7 tests green.
+Expected: PASS, all 8 tests green.
 
 - [ ] **Step 5: Commit**
 
@@ -1627,6 +1672,25 @@ func TestLogout_UnknownToken_DoesNotError(t *testing.T) {
 	svc := newTestService(t)
 	assert.NoError(t, svc.Logout(context.Background(), "never-existed"))
 }
+
+// TestLogin_EmailIsCaseInsensitive: registering with one casing and logging
+// in with another must succeed — see TestRegister_EmailIsCaseInsensitive
+// (Task 7) for why this matters.
+func TestLogin_EmailIsCaseInsensitive(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	_, err := svc.Register(ctx, auth.RegisterInput{
+		Email: "CaseTest@Example.com", Password: "SecureP@ss123", DisplayName: "CaseTest",
+	})
+	require.NoError(t, err)
+	code, err := svc.PeekVerificationCodeForTest(ctx, "casetest@example.com")
+	require.NoError(t, err)
+	require.NoError(t, svc.VerifyEmail(ctx, "casetest@example.com", code))
+
+	result, err := svc.Login(ctx, auth.LoginInput{Email: "CASETEST@EXAMPLE.COM", Password: "SecureP@ss123"})
+	require.NoError(t, err)
+	assert.Equal(t, "casetest@example.com", result.User.Email)
+}
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -1644,6 +1708,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"nexus-connect/backend-go/internal/platform/cache"
 	apperrors "nexus-connect/backend-go/internal/platform/errors"
@@ -1678,6 +1743,8 @@ type TokenResult struct {
 
 // Login mirrors AuthService.login.
 func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, error) {
+	input.Email = strings.ToLower(input.Email)
+
 	user, err := s.store.FindForLogin(ctx, input.Email)
 	if err != nil {
 		return LoginResult{}, err
@@ -1780,12 +1847,13 @@ Note on `issueTokenPair`'s `ExpiresIn`: the original re-parses the `accessTokenE
 
 - [ ] **Step 4: Remove the placeholder `errors` import-keeper — it was never needed**
 
-Step 3's last line (`var _ = errors.New ...`) and the `"errors"` import are dead weight — nothing in this file actually needs the stdlib `errors` package (the error checks above use `== cache.ErrNotFound`, a plain sentinel comparison, not `errors.Is`). Delete both:
+Step 3's last line (`var _ = errors.New ...`) and the `"errors"` import are dead weight — nothing in this file actually needs the stdlib `errors` package (the error checks above use `== cache.ErrNotFound`, a plain sentinel comparison, not `errors.Is`). `"strings"` stays — `Login` uses it. Delete just the `"errors"` line:
 
 ```go
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"nexus-connect/backend-go/internal/platform/cache"
 	apperrors "nexus-connect/backend-go/internal/platform/errors"
@@ -1799,7 +1867,7 @@ and delete the `var _ = errors.New ...` line at the bottom of the file entirely.
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd backend-go && go test -tags=integration ./internal/auth/... -v -run 'TestLogin|TestRefreshTokens|TestLogout'`
-Expected: PASS, all 9 tests green.
+Expected: PASS, all 10 tests green.
 
 - [ ] **Step 6: Commit**
 
@@ -1959,6 +2027,26 @@ func TestUpdatePassword_NoVerifiedTokenOnRecord_ReturnsTokenExpired(t *testing.T
 	assert.Equal(t, "TOKEN_EXPIRED", appErr.Code)
 }
 
+// TestPasswordResetFlow_EmailIsCaseInsensitive: the whole three-step reset
+// flow (forgot -> verify code -> update) must work when each step uses a
+// different casing of the same address — see
+// TestRegister_EmailIsCaseInsensitive (Task 7) for why.
+func TestPasswordResetFlow_EmailIsCaseInsensitive(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	registerAndVerify(t, svc, "resetcase@example.com", "OldP@ssw0rd", "ResetCase")
+
+	require.NoError(t, svc.ForgotPassword(ctx, "ResetCase@Example.com"))
+	code, err := svc.PeekPasswordResetCodeForTest(ctx, "RESETCASE@EXAMPLE.COM")
+	require.NoError(t, err)
+	resetToken, err := svc.VerifyResetCode(ctx, "resetcase@EXAMPLE.com", code)
+	require.NoError(t, err)
+	require.NoError(t, svc.UpdatePassword(ctx, "ResetCase@example.COM", resetToken, "NewP@ssw0rd99"))
+
+	_, err = svc.Login(ctx, auth.LoginInput{Email: "resetcase@example.com", Password: "NewP@ssw0rd99"})
+	require.NoError(t, err)
+}
+
 var _ = platformauth.TokenPayload{} // referenced only to keep the import used if a future edit trims the explicit assertions above
 ```
 
@@ -1983,6 +2071,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"nexus-connect/backend-go/internal/platform/cache"
@@ -2015,6 +2104,8 @@ type passwordResetVerifiedRecord struct {
 // anti-enumeration contract (Review Focus item 2): always nil, whether the
 // email exists or not.
 func (s *Service) ForgotPassword(ctx context.Context, email string) error {
+	email = strings.ToLower(email)
+
 	userID, err := s.store.FindIDByEmail(ctx, email)
 	if err != nil {
 		return err
@@ -2044,6 +2135,8 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 // code, issues a single-use opaque reset token valid for 10 minutes, and
 // deletes the code (it's now used).
 func (s *Service) VerifyResetCode(ctx context.Context, email, code string) (string, error) {
+	email = strings.ToLower(email)
+
 	stored, err := s.cache.Get(ctx, cache.PasswordResetKey(email))
 	if err != nil {
 		if err == cache.ErrNotFound {
@@ -2083,6 +2176,8 @@ func (s *Service) VerifyResetCode(ctx context.Context, email, code string) (stri
 
 // UpdatePassword mirrors AuthService.updatePassword.
 func (s *Service) UpdatePassword(ctx context.Context, email, resetToken, newPassword string) error {
+	email = strings.ToLower(email)
+
 	stored, err := s.cache.Get(ctx, cache.PasswordResetVerifiedKey(email))
 	if err != nil {
 		if err == cache.ErrNotFound {
@@ -2137,6 +2232,7 @@ func randomOpaqueToken() (string, error) {
 
 // PeekPasswordResetCodeForTest mirrors PeekVerificationCodeForTest's reasoning.
 func (s *Service) PeekPasswordResetCodeForTest(ctx context.Context, email string) (string, error) {
+	email = strings.ToLower(email)
 	stored, err := s.cache.Get(ctx, cache.PasswordResetKey(email))
 	if err != nil {
 		return "", err
@@ -2151,8 +2247,8 @@ func (s *Service) PeekPasswordResetCodeForTest(ctx context.Context, email string
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `cd backend-go && go test -tags=integration ./internal/auth/... -v -run 'TestForgotPassword|TestVerifyResetCode|TestUpdatePassword'`
-Expected: PASS, all 9 tests green.
+Run: `cd backend-go && go test -tags=integration ./internal/auth/... -v -run 'TestForgotPassword|TestVerifyResetCode|TestUpdatePassword|TestPasswordResetFlow'`
+Expected: PASS, all 10 tests green.
 
 - [ ] **Step 6: Commit**
 
