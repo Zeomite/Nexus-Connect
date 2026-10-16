@@ -30,6 +30,27 @@ func TestGenerateAndVerifyAccessToken_RoundTrips(t *testing.T) {
 	assert.Equal(t, payload, got)
 }
 
+// TestGenerateRefreshToken_SameInputsWithinSameSecond_ProducesDistinctTokens
+// pins a real single-use-rotation bug this test caught: jwt.RegisteredClaims
+// timestamps (iat/exp) are second-granularity, so two tokens signed for the
+// same payload within the same wall-clock second were previously
+// byte-for-byte identical (same header, same claims, same HMAC signature).
+// Callers that key a store by the token string (RefreshTokens's Redis entry,
+// keyed by cache.RefreshTokenKey(token)) rely on each issued token being
+// unique: a collision silently resurrects an already-rotated-out token under
+// its own key, defeating single-use. A random jti makes every token distinct
+// regardless of timing, independent of any other claim.
+func TestGenerateRefreshToken_SameInputsWithinSameSecond_ProducesDistinctTokens(t *testing.T) {
+	payload := auth.TokenPayload{UserID: "u-1", Email: "a@example.com", UniqueNumber: "1234567890"}
+
+	first, err := auth.GenerateRefreshToken(payload, "test-secret-32-characters-min!!", time.Hour)
+	require.NoError(t, err)
+	second, err := auth.GenerateRefreshToken(payload, "test-secret-32-characters-min!!", time.Hour)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, first, second)
+}
+
 func TestVerifyToken_ExpiredReturnsTokenExpiredError(t *testing.T) {
 	payload := auth.TokenPayload{UserID: "u-1", Email: "a@example.com", UniqueNumber: "1234567890"}
 	token, err := auth.GenerateAccessToken(payload, "test-secret-32-characters-min!!", -time.Minute) // already expired

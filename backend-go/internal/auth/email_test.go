@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"nexus-connect/backend-go/internal/auth"
 	"nexus-connect/backend-go/internal/platform/config"
@@ -14,12 +15,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testEmailConfig is the shared config.Config fixture for every Service
+// test in this package (Task 7 onward), not just email tests — the name
+// predates that reuse. JWT fields were added in Task 8, which is the first
+// task whose Service methods (Login/RefreshTokens) touch them.
 func testEmailConfig() config.Config {
 	return config.Config{
-		SMTPHost:  "smtp.example.com",
-		SMTPPort:  587,
-		SMTPUser:  "",
-		EmailFrom: "noreply@nexus.com",
+		SMTPHost:         "smtp.example.com",
+		SMTPPort:         587,
+		SMTPUser:         "",
+		EmailFrom:        "noreply@nexus.com",
+		JWTAccessSecret:  "test-access-secret",
+		JWTRefreshSecret: "test-refresh-secret",
+		JWTAccessExpiry:  15 * time.Minute,
+		JWTRefreshExpiry: 7 * 24 * time.Hour,
 	}
 }
 

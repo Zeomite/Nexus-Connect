@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -42,15 +44,34 @@ func GenerateRefreshToken(payload TokenPayload, secret string, ttl time.Duration
 }
 
 func generateToken(payload TokenPayload, secret string, ttl time.Duration) (string, error) {
+	jti, err := randomJTI()
+	if err != nil {
+		return "", fmt.Errorf("auth: generating token id: %w", err)
+	}
+
 	c := claims{
 		TokenPayload: payload,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ID:        jti,
 		},
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
 	return token.SignedString([]byte(secret))
+}
+
+// randomJTI gives every generated token a unique jti claim. Without it, two
+// tokens signed for the same payload within the same wall-clock second are
+// byte-for-byte identical (iat/exp are second-granularity), which breaks any
+// caller relying on each issued token being distinct — e.g. RefreshTokens's
+// single-use rotation, which keys its Redis entry by the token string itself.
+func randomJTI() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // VerifyToken mirrors verifyAccessToken/verifyRefreshToken in crypto.ts,
