@@ -3315,6 +3315,8 @@ git add backend-go/internal/platform/migrations backend-go/go.mod backend-go/go.
 git commit -m "backend-go: add platform/migrations (golang-migrate, schema ported table-for-table from init.sql)"
 ```
 
+**Plan correction (found during implementation, not in the original text above):** Step 3's `startPostgres` test helper was missing `postgres.BasicWaitStrategies()` in its `postgres.Run(...)` call — the same defect as Task 6's `db_test.go`, and for the same reason: without it, testcontainers considers the container ready after Postgres' first startup, before its self-restart, producing "connection reset by peer" on the first real connection attempt. Added `postgres.BasicWaitStrategies()` to the options list.
+
 ---
 
 ## Task 15: `cmd/server/main.go` — fx wiring, lifecycle, `/health`

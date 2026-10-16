@@ -1,0 +1,12 @@
+DROP TABLE IF EXISTS ledger_entries;
+DROP TABLE IF EXISTS expense_splits;
+DROP TABLE IF EXISTS expenses;
+DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS groups;
+DROP TABLE IF EXISTS call_history;
+DROP TABLE IF EXISTS call_participants;
+DROP TABLE IF EXISTS calls;
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS chat_participants;
+DROP TABLE IF EXISTS chats;
+DROP TABLE IF EXISTS users;
