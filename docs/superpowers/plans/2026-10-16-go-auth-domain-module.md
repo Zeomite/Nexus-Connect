@@ -969,6 +969,10 @@ git add backend-go/internal/auth/email.go backend-go/internal/auth/email_test.go
 git commit -m "backend-go/auth: add EmailSender (stdlib net/smtp, fire-and-forget like the original)"
 ```
 
+**Plan correction (found during post-commit security review, not in the original text above):** `sendOne`'s message builder above has an email-header-injection gap (CWE-93) the original doesn't have — `nodemailer` sanitizes addresses and header values internally, but this Go port's plain `fmt.Sprintf` construction doesn't, so a `to` value smuggling a CRLF could inject extra SMTP headers into the message, or — since `to` is also handed to `smtp.SendMail`'s envelope-level RCPT TO step — inject arbitrary additional SMTP protocol commands onto the wire. This is a real regression introduced by hand-rolling the message instead of using a library with built-in protection, not a preserved original gap, so it was fixed (not just marked): `sendOne` now checks `to`/`subject`/`e.cfg.EmailFrom` for embedded CR/LF and refuses to send (logs and returns, consistent with the type's existing never-returns-an-error contract) if any contain one. Confirmed via a RED→GREEN test (`TestSendVerificationEmail_RejectsHeaderInjectionInRecipient`) that the unfixed code let the injection reach the transport layer, and that the fix blocks it.
+
+Separately, `realSend`'s `smtp.SendMail` only attempts STARTTLS opportunistically — an active network attacker stripping the STARTTLS advertisement would silently downgrade to plaintext. This one is **not** fixed, since the original has the identical weakness (`email.service.ts` configures `nodemailer` with `secure: config.email.secure`, always `false` in every env this runs in, and no `requireTLS`) — a faithfully-preserved gap per spec §2, not a regression. Marked with a `// TODO(gap)` comment on `realSend` instead of silently fixed, since enforcing mandatory STARTTLS is a real behavior/deployment-compatibility change (e.g. it would break a local dev SMTP catcher without STARTTLS support) that belongs in spec §2's dedicated future gap-fixing pass, not this port.
+
 ---
 
 ## Task 6: `internal/auth/events.go` — event types

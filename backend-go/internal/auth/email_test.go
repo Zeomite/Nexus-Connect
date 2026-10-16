@@ -66,3 +66,23 @@ func TestSendVerificationEmail_SwallowsSendError(t *testing.T) {
 	})
 	assert.True(t, strings.Contains(buf.String(), "level\":\"ERROR\""), "a send failure must be logged, not thrown")
 }
+
+// TestSendVerificationEmail_RejectsHeaderInjectionInRecipient guards against
+// CRLF/email-header injection (CWE-93): the raw SMTP message is built with
+// plain fmt.Sprintf, unlike the original's nodemailer, which sanitizes
+// addresses internally. A "to" value smuggling a CRLF could otherwise inject
+// extra headers (e.g. a Bcc:) or additional message content that the SMTP
+// server would interpret as part of the envelope. sendFunc must never be
+// called at all for such an input.
+func TestSendVerificationEmail_RejectsHeaderInjectionInRecipient(t *testing.T) {
+	sendCalled := false
+	sender := auth.NewEmailSender(testEmailConfig(), logger.New("test"))
+	sender.SetSendFuncForTest(func(addr string, from string, to []string, msg []byte) error {
+		sendCalled = true
+		return nil
+	})
+
+	sender.SendVerificationEmail("victim@example.com\r\nBcc: attacker@evil.com", "123456")
+
+	assert.False(t, sendCalled, "a recipient containing CRLF must never reach the SMTP transport")
+}

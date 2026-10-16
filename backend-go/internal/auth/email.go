@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/smtp"
 	"strconv"
+	"strings"
 
 	"nexus-connect/backend-go/internal/platform/config"
 )
@@ -41,6 +42,20 @@ func (e *EmailSender) SetSendFuncForTest(fn sendFunc) {
 	e.send = fn
 }
 
+// TODO(gap): smtp.SendMail only attempts STARTTLS opportunistically — if an
+// active network attacker strips the STARTTLS advertisement from the
+// server's EHLO response, this silently falls back to a plaintext
+// connection (exposing the SMTP AUTH credentials above, when set, and the
+// email body, including verification/reset codes) with no error. This
+// matches the original's own posture exactly: email.service.ts configures
+// nodemailer with `secure: config.email.secure` (always false in every env
+// this runs in — SMTP_SECURE is never set to 'true' anywhere in backend/)
+// and no `requireTLS`, so nodemailer is equally susceptible to the same
+// STARTTLS-stripping class. Not fixed here per spec §2 (faithful port
+// first; known gaps are marked, not silently fixed during the port) —
+// enforcing mandatory STARTTLS is a real behavior change with deployment
+// implications (e.g. it would break a local dev SMTP catcher that doesn't
+// support STARTTLS at all) and belongs in the dedicated gap-fixing pass.
 func (e *EmailSender) realSend(addr string, from string, to []string, msg []byte) error {
 	var auth smtp.Auth
 	if e.cfg.SMTPUser != "" {
@@ -67,7 +82,23 @@ func (e *EmailSender) SendPasswordResetEmail(to, code string) {
 	e.sendOne(to, subject, body, "password reset")
 }
 
+// sendOne builds the raw RFC 5322 message by hand (unlike the original,
+// which delegates to nodemailer — a library that sanitizes addresses and
+// header values internally). Because nothing here guards against it
+// otherwise, a "to" containing a CRLF could inject extra SMTP headers (e.g.
+// a smuggled Bcc:) into the message body, or — since "to" is also handed to
+// smtp.SendMail's envelope-level RCPT TO step — inject arbitrary additional
+// SMTP protocol commands onto the wire (CWE-93). "subject" and
+// e.cfg.EmailFrom aren't attacker-controlled today (subject is a hardcoded
+// literal per call site, EmailFrom comes from server config), but are
+// checked too since sendOne is the last checkpoint before raw bytes leave
+// the process, not an assumption about who calls it.
 func (e *EmailSender) sendOne(to, subject, body, kind string) {
+	if containsCRLF(to) || containsCRLF(subject) || containsCRLF(e.cfg.EmailFrom) {
+		e.log.Error("refusing to send "+kind+" email: header injection attempt detected", "to", to)
+		return
+	}
+
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\n\r\n%s\r\n",
 		e.cfg.EmailFrom, to, subject, body)
 
@@ -77,4 +108,8 @@ func (e *EmailSender) sendOne(to, subject, body, kind string) {
 		return
 	}
 	e.log.Info(kind+" email sent", "to", to)
+}
+
+func containsCRLF(s string) bool {
+	return strings.ContainsAny(s, "\r\n")
 }
