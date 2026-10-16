@@ -2648,6 +2648,8 @@ git add backend-go/internal/platform/validate backend-go/go.mod backend-go/go.su
 git commit -m "backend-go: add platform/validate (go-playground/validator + password_strength rule)"
 ```
 
+**Plan correction (found during implementation, not in the original text above):** Step 1's `registerInput` test struct had `Password string \`validate:"required,password_strength"\`` — no length tag. Since `passwordStrength` only checks character-class composition (never length), `TestStruct_PasswordStrength_RejectsTooShort`'s 6-char `"Sh0rt!"` (which has upper/lower/digit/special all present) would have passed validation, not failed as the test expects — the plan's own test contradicted its own code comment, which already said length should be a separate `min=8,max=128` tag alongside `password_strength` (matching `validators.ts:79-89`'s `.min(8).max(128)` chained before its character-class `.refine()` calls). Fixed by adding `min=8,max=128` to the test struct's Password tag.
+
 ---
 
 ## Task 13: `internal/platform/httpserver` — router, middleware, error mapping
