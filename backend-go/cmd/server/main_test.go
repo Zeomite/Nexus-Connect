@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 
+	"nexus-connect/backend-go/internal/auth"
 	"nexus-connect/backend-go/internal/platform"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,4 +128,18 @@ func TestApp_BootConstructsDBAndAppliesMigrations(t *testing.T) {
 		`SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'users')`,
 	).Scan(&exists))
 	assert.True(t, exists, "provideDB must have actually run migrations.Run against the real database")
+}
+
+func TestApp_RegistersAndLogsInThroughTheRealHTTPServer(t *testing.T) {
+	setAppEnv(t, 18083)
+
+	app := fxtest.New(t, platform.Module, auth.Module, fx.NopLogger)
+	app.RequireStart()
+	defer app.RequireStop()
+
+	registerBody := `{"email":"e2e@example.com","password":"SecureP@ss123","displayName":"E2E"}`
+	resp, err := http.Post("http://localhost:18083/api/v1/auth/register", "application/json", strings.NewReader(registerBody))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 }
