@@ -108,3 +108,13 @@ func TestLoad_AppliesSMTPDefaults(t *testing.T) {
 	assert.Equal(t, "", cfg.SMTPUser)
 	assert.Equal(t, "noreply@nexus.com", cfg.EmailFrom)
 }
+
+func TestLoad_StorageDefaults(t *testing.T) {
+	t.Setenv("JWT_ACCESS_SECRET", "test-access-secret-at-least-32-chars")
+	t.Setenv("JWT_REFRESH_SECRET", "test-refresh-secret-at-least-32-chars")
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "nexus-profiles", cfg.StorageBucket)
+	assert.Equal(t, "us-east-1", cfg.StorageRegion)
+}

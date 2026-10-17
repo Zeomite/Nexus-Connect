@@ -38,6 +38,9 @@ type Config struct {
 	SMTPUser     string
 	SMTPPassword string
 	EmailFrom    string
+
+	StorageBucket string
+	StorageRegion string
 }
 
 func Load() (Config, error) {
@@ -74,6 +77,9 @@ func Load() (Config, error) {
 		SMTPUser:     envStr("SMTP_USER", ""),
 		SMTPPassword: envStr("SMTP_PASSWORD", ""),
 		EmailFrom:    envStr("EMAIL_FROM", "noreply@nexus.com"),
+
+		StorageBucket: envStr("STORAGE_BUCKET", "nexus-profiles"),
+		StorageRegion: envStr("STORAGE_REGION", "us-east-1"),
 	}
 
 	if cfg.JWTAccessSecret == "" || cfg.JWTRefreshSecret == "" {
