@@ -57,6 +57,43 @@ func (c *Cache) GetDel(ctx context.Context, key string) (string, error) {
 	return val, nil
 }
 
+// MGet reads every key in one Redis round trip. The returned map contains
+// an entry only for keys that actually had a value — go-redis's MGet
+// returns a nil interface{} for a missing key, which this collapses to
+// "absent from the map" rather than a zero-value "" entry, so callers
+// can't mistake a cache miss for a cached empty string.
+func (c *Cache) MGet(ctx context.Context, keys []string) (map[string]string, error) {
+	if len(keys) == 0 {
+		return map[string]string{}, nil
+	}
+
+	vals, err := c.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[string]string, len(keys))
+	for i, v := range vals {
+		if v == nil {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		result[keys[i]] = s
+	}
+	return result, nil
+}
+
+func (c *Cache) SAdd(ctx context.Context, key string, members ...string) error {
+	return c.client.SAdd(ctx, key, members).Err()
+}
+
+func (c *Cache) SRem(ctx context.Context, key string, members ...string) error {
+	return c.client.SRem(ctx, key, members).Err()
+}
+
 func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	n, err := c.client.Exists(ctx, key).Result()
 	return n == 1, err

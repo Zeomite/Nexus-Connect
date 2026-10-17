@@ -79,6 +79,40 @@ func TestGetDel_MissingKeyReturnsErrNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, cache.ErrNotFound)
 }
 
+func TestMGet_ReturnsOnlyKeysThatExist(t *testing.T) {
+	addr := startRedis(t)
+	c := cache.New(addr, "", 0)
+	defer c.Close()
+	ctx := context.Background()
+
+	require.NoError(t, c.Set(ctx, "a", "1", time.Minute))
+	require.NoError(t, c.Set(ctx, "c", "3", time.Minute))
+
+	result, err := c.MGet(ctx, []string{"a", "b", "c"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"a": "1", "c": "3"}, result, "key b was never set and must be absent, not a zero-value entry")
+}
+
+func TestMGet_AllMissingReturnsEmptyMap(t *testing.T) {
+	addr := startRedis(t)
+	c := cache.New(addr, "", 0)
+	defer c.Close()
+
+	result, err := c.MGet(context.Background(), []string{"x", "y"})
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestSAddSRem_DoNotError(t *testing.T) {
+	addr := startRedis(t)
+	c := cache.New(addr, "", 0)
+	defer c.Close()
+	ctx := context.Background()
+
+	require.NoError(t, c.SAdd(ctx, "myset", "user-1", "user-2"))
+	require.NoError(t, c.SRem(ctx, "myset", "user-1"))
+}
+
 func TestEval_SlidingWindowScriptPattern(t *testing.T) {
 	addr := startRedis(t)
 	c := cache.New(addr, "", 0)
