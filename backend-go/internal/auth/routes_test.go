@@ -1,0 +1,193 @@
+//go:build integration
+
+package auth_test
+
+import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"nexus-connect/backend-go/internal/auth"
+	"nexus-connect/backend-go/internal/platform/config"
+	"nexus-connect/backend-go/internal/platform/httpserver"
+	"nexus-connect/backend-go/internal/platform/logger"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestRegisterRoutes_MountsAllNineEndpointsUnderAPIV1Auth(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t) // routes.go constructs its own limiters from this
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "development"} // skip rate limiting for this mounting test
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	for _, path := range []string{
+		"/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh",
+		"/api/v1/auth/logout", "/api/v1/auth/verify-email", "/api/v1/auth/resend-verification",
+		"/api/v1/auth/forgot-password", "/api/v1/auth/verify-reset-code", "/api/v1/auth/update-password",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		assert.NotEqual(t, http.StatusNotFound, rec.Code, "expected %s to be mounted", path)
+	}
+}
+
+// TestRegisterRoutes_LoginUsesLooserLimiterThanRegister pins Review Focus
+// item 5: /login (1h/10) must not share the stricter 15min/5 limiter
+// /register uses — this test drives /register to its limit with real
+// requests and confirms /login, hit immediately after from the same
+// identifier, is unaffected.
+func TestRegisterRoutes_LoginUsesLooserLimiterThanRegister(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t)
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "production"} // rate limiting enforced
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	remoteAddr := "7.7.7.7:4444"
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(
+			`{"email":"ratelimit-`+string(rune('a'+i))+`@example.com","password":"SecureP@ss123","displayName":"RL"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "register attempt %d should not yet be rate limited", i+1)
+	}
+
+	// The 6th /register from the same identifier must now be rate limited...
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(`{}`))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
+
+	// ...but /login from the same identifier must not be, since it uses a
+	// separate (1h/10) limiter.
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(
+		`{"email":"nobody@example.com","password":"whatever"}`,
+	))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginReq.RemoteAddr = remoteAddr
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	assert.NotEqual(t, http.StatusTooManyRequests, loginRec.Code, "/login must have its own, separate rate-limit budget from /register")
+
+	// That previous assertion alone can't distinguish "/login has its own,
+	// looser budget" from "/login has no rate limiting at all" — drive
+	// /login to its own documented limit (10/hr) from the same identifier
+	// and confirm it DOES eventually get rate limited too, proving a real,
+	// separately-enforced budget exists (one request already spent above).
+	for i := 0; i < 9; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(
+			`{"email":"nobody@example.com","password":"whatever"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "login attempt %d should not yet be rate limited", i+2)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(
+		`{"email":"nobody@example.com","password":"whatever"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = remoteAddr
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "/login must have its own enforced limit, not simply be unlimited")
+}
+
+// TestRegisterRoutes_AuthLimiterBudgetIsSharedAcrossItsRoutes: authLimiter
+// is one *Limiter instance reused via .With(authLimited) on six different
+// routes (register, verify-email, resend-verification, forgot-password,
+// verify-reset-code, update-password) — matching the original's single
+// shared RateLimiter with a fixed "auth" keyPrefix. Exhausting the budget
+// via one of those routes must rate limit the others too, for the same
+// identifier — this is the real behavior that matters, not just "does
+// hitting /register repeatedly eventually 429."
+func TestRegisterRoutes_AuthLimiterBudgetIsSharedAcrossItsRoutes(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t)
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "production"}
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	remoteAddr := "8.8.8.8:5555"
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(
+			`{"email":"shared-budget-`+string(rune('a'+i))+`@example.com","password":"SecureP@ss123","displayName":"RL"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "register attempt %d should not yet be rate limited", i+1)
+	}
+
+	// /register's own budget (just exhausted) is now spent...
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(`{}`))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+
+	// ...and so is /forgot-password's, for the same identifier, since both
+	// share the one authLimiter instance.
+	forgotReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", bytes.NewBufferString(
+		`{"email":"someone@example.com"}`,
+	))
+	forgotReq.Header.Set("Content-Type", "application/json")
+	forgotReq.RemoteAddr = remoteAddr
+	forgotRec := httptest.NewRecorder()
+	mux.ServeHTTP(forgotRec, forgotReq)
+	assert.Equal(t, http.StatusTooManyRequests, forgotRec.Code, "/forgot-password shares authLimiter's budget with /register for the same identifier")
+}
+
+// TestRegisterRoutes_RefreshAndLogoutAreNotRateLimited pins the other half
+// of Review Focus item 5: /refresh and /logout get no rate limiter at all
+// in the original, unlike every other mutating auth route. /refresh in
+// particular is hit on every access-token expiry (every 15 minutes by
+// default) — accidentally binding the 15min/5 authLimiter to it would lock
+// out any normal user after their 6th token refresh.
+func TestRegisterRoutes_RefreshAndLogoutAreNotRateLimited(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t)
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "production"}
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	remoteAddr := "9.9.9.9:6666"
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", bytes.NewBufferString(`{"refreshToken":"not-a-real-token"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "/refresh attempt %d must not be rate limited", i+1)
+	}
+
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", bytes.NewBufferString(`{"refreshToken":"not-a-real-token"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "/logout attempt %d must not be rate limited", i+1)
+	}
+}
