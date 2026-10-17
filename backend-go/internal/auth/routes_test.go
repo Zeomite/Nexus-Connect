@@ -83,4 +83,76 @@ func TestRegisterRoutes_LoginUsesLooserLimiterThanRegister(t *testing.T) {
 	loginRec := httptest.NewRecorder()
 	mux.ServeHTTP(loginRec, loginReq)
 	assert.NotEqual(t, http.StatusTooManyRequests, loginRec.Code, "/login must have its own, separate rate-limit budget from /register")
+
+	// That previous assertion alone can't distinguish "/login has its own,
+	// looser budget" from "/login has no rate limiting at all" — drive
+	// /login to its own documented limit (10/hr) from the same identifier
+	// and confirm it DOES eventually get rate limited too, proving a real,
+	// separately-enforced budget exists (one request already spent above).
+	for i := 0; i < 9; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(
+			`{"email":"nobody@example.com","password":"whatever"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "login attempt %d should not yet be rate limited", i+2)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(
+		`{"email":"nobody@example.com","password":"whatever"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = remoteAddr
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "/login must have its own enforced limit, not simply be unlimited")
+}
+
+// TestRegisterRoutes_AuthLimiterBudgetIsSharedAcrossItsRoutes: authLimiter
+// is one *Limiter instance reused via .With(authLimited) on six different
+// routes (register, verify-email, resend-verification, forgot-password,
+// verify-reset-code, update-password) — matching the original's single
+// shared RateLimiter with a fixed "auth" keyPrefix. Exhausting the budget
+// via one of those routes must rate limit the others too, for the same
+// identifier — this is the real behavior that matters, not just "does
+// hitting /register repeatedly eventually 429."
+func TestRegisterRoutes_AuthLimiterBudgetIsSharedAcrossItsRoutes(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t)
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "production"}
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	remoteAddr := "8.8.8.8:5555"
+	for i := 0; i < 5; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(
+			`{"email":"shared-budget-`+string(rune('a'+i))+`@example.com","password":"SecureP@ss123","displayName":"RL"}`,
+		))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "register attempt %d should not yet be rate limited", i+1)
+	}
+
+	// /register's own budget (just exhausted) is now spent...
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", bytes.NewBufferString(`{}`))
+	req.RemoteAddr = remoteAddr
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+
+	// ...and so is /forgot-password's, for the same identifier, since both
+	// share the one authLimiter instance.
+	forgotReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/forgot-password", bytes.NewBufferString(
+		`{"email":"someone@example.com"}`,
+	))
+	forgotReq.Header.Set("Content-Type", "application/json")
+	forgotReq.RemoteAddr = remoteAddr
+	forgotRec := httptest.NewRecorder()
+	mux.ServeHTTP(forgotRec, forgotReq)
+	assert.Equal(t, http.StatusTooManyRequests, forgotRec.Code, "/forgot-password shares authLimiter's budget with /register for the same identifier")
 }

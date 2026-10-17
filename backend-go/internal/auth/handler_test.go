@@ -4,6 +4,7 @@ package auth_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,8 +20,14 @@ import (
 
 func newTestHandler(t *testing.T) *auth.Handler {
 	t.Helper()
+	h, _ := newTestHandlerWithService(t)
+	return h
+}
+
+func newTestHandlerWithService(t *testing.T) (*auth.Handler, *auth.Service) {
+	t.Helper()
 	svc := newTestService(t)
-	return auth.NewHandler(svc, logger.New("test"))
+	return auth.NewHandler(svc, logger.New("test")), svc
 }
 
 func doJSON(t *testing.T, fn httpserver.HandlerFunc, method, body string) *httptest.ResponseRecorder {
@@ -154,12 +161,26 @@ func TestHandlerLogout_EmptyRefreshToken_Returns200(t *testing.T) {
 // the original's update-password route has no Zod schema call at all for
 // resetToken (it's destructured directly from the body, validated only by
 // Fastify's route-level JSON schema, which is `{type: 'string'}` with no
-// minLength) — an empty string reaches updatePassword and fails downstream
-// (401 TOKEN_EXPIRED/INVALID_TOKEN), never 422.
+// minLength) — an empty string reaches updatePassword and fails downstream,
+// never 422. A real verified-reset record is created first so the request
+// actually reaches the resetToken-comparison branch (INVALID_TOKEN) rather
+// than short-circuiting on "no record at all" (TOKEN_EXPIRED) — otherwise
+// this test would pass for any garbage resetToken, not specifically "".
 func TestHandlerUpdatePassword_EmptyResetToken_Returns401NotValidationError(t *testing.T) {
-	h := newTestHandler(t)
-	rec := doJSON(t, h.UpdatePassword, http.MethodPost, `{"email":"nobody@example.com","resetToken":"","password":"NewP@ssw0rd99"}`)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	h, svc := newTestHandlerWithService(t)
+	ctx := context.Background()
+	registerAndVerify(t, svc, "update-pw-empty-token@example.com", "OldP@ssw0rd", "UpdatePwEmptyToken")
+	require.NoError(t, svc.ForgotPassword(ctx, "update-pw-empty-token@example.com"))
+	code, err := svc.PeekPasswordResetCodeForTest(ctx, "update-pw-empty-token@example.com")
+	require.NoError(t, err)
+	_, err = svc.VerifyResetCode(ctx, "update-pw-empty-token@example.com", code)
+	require.NoError(t, err)
+
+	rec := doJSON(t, h.UpdatePassword, http.MethodPost, `{"email":"update-pw-empty-token@example.com","resetToken":"","password":"NewP@ssw0rd99"}`)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	var body map[string]map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "INVALID_TOKEN", body["error"]["code"], "must reach the resetToken-comparison branch, not short-circuit on a missing record")
 }
 
 func TestHandlerForgotPassword_AlwaysReturns200WithGenericMessage(t *testing.T) {
