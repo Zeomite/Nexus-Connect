@@ -48,10 +48,23 @@ func (w *statusTrackingWriter) Write(b []byte) (int, error) {
 // Wrap adapts a HandlerFunc (which can return an error) into a standard
 // http.HandlerFunc, mapping any returned error to the same
 // {"error":{"code","message","details"}} JSON shape the original
-// TypeScript services' global error handlers produce.
+// TypeScript services' global error handlers produce. Applies the
+// package's default body-size cap (maxRequestBodyBytes) — use
+// WrapWithBodyLimit for a route that genuinely needs a different one
+// (e.g. a file upload).
 func Wrap(log *slog.Logger, fn HandlerFunc) http.HandlerFunc {
+	return wrapWithLimit(log, fn, maxRequestBodyBytes)
+}
+
+// WrapWithBodyLimit is Wrap with a caller-chosen body-size cap instead of
+// the package default.
+func WrapWithBodyLimit(log *slog.Logger, fn HandlerFunc, maxBytes int64) http.HandlerFunc {
+	return wrapWithLimit(log, fn, maxBytes)
+}
+
+func wrapWithLimit(log *slog.Logger, fn HandlerFunc, maxBytes int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 		sw := &statusTrackingWriter{ResponseWriter: w}
 		err := fn(sw, r)
 		if err == nil {

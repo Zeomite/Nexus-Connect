@@ -213,6 +213,33 @@ func TestWrap_OversizedBodyIsRejected(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestWrapWithBodyLimit_AllowsBodyUnderCustomLimitButRejectsOverIt proves
+// WrapWithBodyLimit uses its own parameter, not the package's fixed
+// maxRequestBodyBytes — needed because the user module's avatar upload
+// (5 MiB) would otherwise be rejected by Wrap's 1 MiB default before the
+// handler ever sees the file.
+func TestWrapWithBodyLimit_AllowsBodyUnderCustomLimitButRejectsOverIt(t *testing.T) {
+	log := logger.New("test")
+	handler := httpserver.WrapWithBodyLimit(log, func(w http.ResponseWriter, r *http.Request) error {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			return apperrors.BadRequest("Invalid request body", nil)
+		}
+		return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+	}, 2<<20) // 2 MiB, above Wrap's 1 MiB default
+
+	underLimit := bytes.Repeat([]byte("a"), (1<<20)+1) // over Wrap's default, under this custom limit
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(underLimit))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code, "a body between Wrap's default and this custom limit must be accepted")
+
+	overLimit := bytes.Repeat([]byte("a"), (2<<20)+1)
+	req2 := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(overLimit))
+	rec2 := httptest.NewRecorder()
+	handler(rec2, req2)
+	assert.Equal(t, http.StatusBadRequest, rec2.Code, "a body over this custom limit must still be rejected")
+}
+
 func assertAnError() error {
 	return &plainErr{}
 }
