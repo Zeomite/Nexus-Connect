@@ -216,6 +216,18 @@ func (s *Store) UpdateProfilePicture(ctx context.Context, userID, url string) er
 	return nil
 }
 
+// SearchByName's likePattern is fully bound as $2, never interpolated — no
+// SQL injection risk. It is, however, literally the caller's search term
+// with raw ILIKE wildcards added around it, with no escaping of any `%`/`_`
+// the term itself might contain: a query containing a literal "%" matches
+// everyone, and "_" matches any single character, same as the original's
+// identical, equally-unescaped `%${query}%` construction
+// (backend/services/user-service/src/services/user.service.ts). Faithfully
+// preserved, not a new regression — produces surprising search results in
+// a narrow case, not a security issue (query is a bound parameter either
+// way), and isn't listed in user-service/AGENTS.md's own known-limitations
+// section, so it doesn't carry the formal // TODO(gap) marker spec §2
+// reserves for items that are.
 func (s *Store) SearchByName(ctx context.Context, excludeUserID, likePattern string, limit, offset int) ([]PublicProfileRow, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT id, display_name, unique_number, profile_picture_url, status

@@ -189,6 +189,55 @@ func TestUpdateProfile_DisplayNameOnly_LeavesPictureUntouched(t *testing.T) {
 	assert.Equal(t, "https://example.com/old.png", *row.ProfilePictureURL, "picture must be untouched when only displayName was set")
 }
 
+// TestUpdateProfile_PictureOnly_LeavesDisplayNameUntouched and
+// TestUpdateProfile_BothFieldsSet below close a coverage gap the Task 4
+// review found: the two shipped cases above only ever exercised
+// DisplayName-only and nothing-set, never ProfilePictureURL-only or both
+// fields at once — the only combinations where the dynamic SQL's $N
+// parameter numbering (argN) depends on more than one prior increment.
+func TestUpdateProfile_PictureOnly_LeavesDisplayNameUntouched(t *testing.T) {
+	store := startStore(t)
+	ctx := context.Background()
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000014", "picOnly@example.com", "1000000005", "Untouched Name", "offline")
+
+	newURL := "https://example.com/picture-only.png"
+	result, err := store.UpdateProfile(ctx, "00000000-0000-0000-0000-000000000014", user.ProfileUpdate{
+		ProfilePictureURL: user.OptionalString{Set: true, Value: &newURL},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.ProfilePictureURL.Value)
+	assert.Equal(t, "https://example.com/picture-only.png", *result.ProfilePictureURL.Value)
+
+	row, err := store.ProfileByID(ctx, "00000000-0000-0000-0000-000000000014")
+	require.NoError(t, err)
+	assert.Equal(t, "Untouched Name", row.DisplayName, "display name must be untouched when only the picture was set")
+}
+
+func TestUpdateProfile_BothFieldsSet(t *testing.T) {
+	store := startStore(t)
+	ctx := context.Background()
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000015", "both@example.com", "1000000006", "Old Both", "offline")
+
+	newName := "New Both"
+	newURL := "https://example.com/both.png"
+	result, err := store.UpdateProfile(ctx, "00000000-0000-0000-0000-000000000015", user.ProfileUpdate{
+		DisplayName:       &newName,
+		ProfilePictureURL: user.OptionalString{Set: true, Value: &newURL},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "New Both", *result.DisplayName)
+	require.NotNil(t, result.ProfilePictureURL.Value)
+	assert.Equal(t, "https://example.com/both.png", *result.ProfilePictureURL.Value)
+
+	row, err := store.ProfileByID(ctx, "00000000-0000-0000-0000-000000000015")
+	require.NoError(t, err)
+	assert.Equal(t, "New Both", row.DisplayName)
+	require.NotNil(t, row.ProfilePictureURL)
+	assert.Equal(t, "https://example.com/both.png", *row.ProfilePictureURL)
+}
+
 func TestUpdateProfile_NoFieldsSet_ReturnsNilNotError(t *testing.T) {
 	store := startStore(t)
 	ctx := context.Background()
