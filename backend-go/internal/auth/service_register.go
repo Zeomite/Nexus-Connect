@@ -56,6 +56,12 @@ type verificationCodeRecord struct {
 
 // Register mirrors AuthService.register in
 // backend/services/auth-service/src/services/auth.service.ts.
+//
+// TODO(gap): concurrent duplicate registrations (same email, or colliding
+// unique numbers) can both pass this existence check before either inserts
+// — the DB UNIQUE constraint is the real backstop, but InsertUser's error
+// isn't mapped back to DuplicateEmail, so the losing request surfaces as a
+// generic 500 instead of a clean 409, see backend/services/auth-service/AGENTS.md.
 func (s *Service) Register(ctx context.Context, input RegisterInput) (RegisterResult, error) {
 	input.Email = strings.ToLower(input.Email)
 

@@ -69,6 +69,17 @@ func (s *Service) ForgotPassword(ctx context.Context, email string) error {
 // VerifyResetCode mirrors AuthService.verifyResetCode: checks the 6-digit
 // code, issues a single-use opaque reset token valid for 10 minutes, and
 // deletes the code (it's now used).
+//
+// Not closed here: the Get and the later Del below aren't atomic (unlike
+// RefreshTokens, which was fixed to use cache.GetDel — see Task 8's ledger
+// entry), so two concurrent calls with the same email+code could both pass
+// the comparison before either Del lands, both minting a verified reset
+// token. Lower impact than the RefreshTokens case this mirrors (same user,
+// same already-known code, not a stolen-token amplification), and closing
+// it isn't a plain GetDel swap here: the Del must stay conditional on the
+// code actually matching, or a wrong-code attempt would destroy the real
+// code and lock out a legitimate retry. Left for the dedicated gap-fixing
+// pass (spec §2) rather than redesigning this flow's atomicity mid-port.
 func (s *Service) VerifyResetCode(ctx context.Context, email, code string) (string, error) {
 	email = strings.ToLower(email)
 
@@ -109,13 +120,19 @@ func (s *Service) VerifyResetCode(ctx context.Context, email, code string) (stri
 	return resetToken, nil
 }
 
-// UpdatePassword mirrors AuthService.updatePassword, including a gap the
-// original documents and leaves unfixed with its own inline comment
-// ("Invalidate all refresh tokens for this user... In production, you'd
-// want to track all refresh tokens per user"): a password change here does
-// not revoke any refresh token issued before it. Faithfully preserved, not
-// a new regression — see Task 5's STARTTLS TODO(gap) for the project's
-// established convention on gaps like this.
+// UpdatePassword mirrors AuthService.updatePassword.
+//
+// TODO(gap): a password change here does not revoke any refresh token
+// issued before it — the original documents this exact gap with its own
+// inline comment ("Invalidate all refresh tokens for this user... In
+// production, you'd want to track all refresh tokens per user") and leaves
+// it unfixed too, see backend/services/auth-service/AGENTS.md.
+//
+// Also not closed here: the same non-atomic Get-then-Del shape as
+// VerifyResetCode's own comment above describes (two concurrent calls with
+// the same, still-valid resetToken could both succeed before either Del
+// lands) — same reasoning, same reason it's deferred rather than fixed
+// mid-port.
 func (s *Service) UpdatePassword(ctx context.Context, email, resetToken, newPassword string) error {
 	email = strings.ToLower(email)
 

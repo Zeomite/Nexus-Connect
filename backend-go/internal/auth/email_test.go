@@ -3,6 +3,8 @@ package auth_test
 import (
 	"bytes"
 	"errors"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -94,4 +96,54 @@ func TestSendVerificationEmail_RejectsHeaderInjectionInRecipient(t *testing.T) {
 	sender.SendVerificationEmail("victim@example.com\r\nBcc: attacker@evil.com", "123456")
 
 	assert.False(t, sendCalled, "a recipient containing CRLF must never reach the SMTP transport")
+}
+
+// TestRealSend_RespectsConfiguredTimeout guards against an unbounded SMTP
+// call blocking a request goroutine indefinitely: net/smtp.SendMail sets no
+// dial or I/O deadline, so a server that accepts a TCP connection but never
+// speaks (a filtered egress port, a misconfigured host, an attacker-slowed
+// connection) would otherwise hang the caller forever. This doesn't go
+// through SetSendFuncForTest — every other test in this file replaces the
+// transport with a fake — so it's the only test exercising realSend itself.
+func TestRealSend_RespectsConfiguredTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		// Accept the connection but never speak SMTP — simulates a hung
+		// server. Held open well past the test's own safety window below
+		// so a regression (no deadline applied) would make this test hang
+		// instead of failing fast.
+		time.Sleep(5 * time.Second)
+	}()
+
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	cfg := testEmailConfig()
+	cfg.SMTPHost = host
+	cfg.SMTPPort = port
+	sender := auth.NewEmailSender(cfg, logger.New("test"))
+	sender.SetTimeoutForTest(100 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		sender.SendVerificationEmail("user@example.com", "123456")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// realSend returned promptly once its deadline fired.
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendVerificationEmail did not return within its configured timeout — realSend has no deadline")
+	}
 }

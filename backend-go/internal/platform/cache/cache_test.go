@@ -54,6 +54,31 @@ func TestGet_MissingKeyReturnsErrNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, cache.ErrNotFound)
 }
 
+func TestGetDel_ReturnsValueAndDeletesInOneStep(t *testing.T) {
+	addr := startRedis(t)
+	c := cache.New(addr, "", 0)
+	defer c.Close()
+	ctx := context.Background()
+
+	require.NoError(t, c.Set(ctx, "foo", "bar", time.Minute))
+
+	val, err := c.GetDel(ctx, "foo")
+	require.NoError(t, err)
+	assert.Equal(t, "bar", val)
+
+	_, err = c.Get(ctx, "foo")
+	assert.ErrorIs(t, err, cache.ErrNotFound, "GetDel must delete the key, not just read it")
+}
+
+func TestGetDel_MissingKeyReturnsErrNotFound(t *testing.T) {
+	addr := startRedis(t)
+	c := cache.New(addr, "", 0)
+	defer c.Close()
+
+	_, err := c.GetDel(context.Background(), "does-not-exist")
+	assert.ErrorIs(t, err, cache.ErrNotFound)
+}
+
 func TestEval_SlidingWindowScriptPattern(t *testing.T) {
 	addr := startRedis(t)
 	c := cache.New(addr, "", 0)

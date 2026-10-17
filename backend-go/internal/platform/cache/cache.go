@@ -41,6 +41,22 @@ func (c *Cache) Del(ctx context.Context, keys ...string) error {
 	return c.client.Del(ctx, keys...).Err()
 }
 
+// GetDel atomically reads and deletes key in one round trip (Redis GETDEL),
+// closing the TOCTOU window a separate Get-then-Del leaves open: two
+// concurrent callers racing the same key could otherwise both pass the Get
+// before either Del lands. Only one caller of GetDel ever gets the value;
+// every other concurrent (or later) caller gets ErrNotFound.
+func (c *Cache) GetDel(ctx context.Context, key string) (string, error) {
+	val, err := c.client.GetDel(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
 func (c *Cache) Exists(ctx context.Context, key string) (bool, error) {
 	n, err := c.client.Exists(ctx, key).Result()
 	return n == 1, err

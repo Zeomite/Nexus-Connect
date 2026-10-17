@@ -77,9 +77,12 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 
 // RefreshTokens mirrors AuthService.refreshTokens, including deleting the
 // old Redis entry before issuing a new pair so the old token becomes
-// single-use.
+// single-use. Fetch-and-delete happens in one atomic cache.GetDel call (not
+// a separate Get then Del) so two concurrent calls racing the same token
+// can't both pass the Get before either Del lands — only one ever reads
+// the value; the other immediately sees it already gone.
 func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (TokenResult, error) {
-	userID, err := s.cache.Get(ctx, cache.RefreshTokenKey(refreshToken))
+	userID, err := s.cache.GetDel(ctx, cache.RefreshTokenKey(refreshToken))
 	if err != nil {
 		if err == cache.ErrNotFound {
 			return TokenResult{}, apperrors.InvalidToken()
@@ -89,12 +92,7 @@ func (s *Service) RefreshTokens(ctx context.Context, refreshToken string) (Token
 
 	payload, err := platformauth.VerifyToken(refreshToken, s.cfg.JWTRefreshSecret)
 	if err != nil {
-		_ = s.cache.Del(ctx, cache.RefreshTokenKey(refreshToken))
 		return TokenResult{}, apperrors.InvalidToken()
-	}
-
-	if err := s.cache.Del(ctx, cache.RefreshTokenKey(refreshToken)); err != nil {
-		return TokenResult{}, err
 	}
 
 	tokens, err := s.issueTokenPair(ctx, userID, payload.Email, payload.UniqueNumber)

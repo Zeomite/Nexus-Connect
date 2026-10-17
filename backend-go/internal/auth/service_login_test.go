@@ -76,6 +76,32 @@ func TestLogin_UnverifiedEmail_ReturnsEmailNotVerified_NotInvalidCredentials(t *
 	assert.Equal(t, "EMAIL_NOT_VERIFIED", appErr.Code)
 }
 
+// TestLogin_UnverifiedEmailWrongPassword_ReturnsInvalidCredentials is the
+// other half of Review Focus item 1: TestLogin_UnverifiedEmail_* above only
+// proves the verification check doesn't fire when the password is right —
+// it can't distinguish "password checked first" from "verification checked
+// first" (an unverified account with a correct password hits
+// EMAIL_NOT_VERIFIED under either ordering). Only a WRONG password against
+// an unverified account tells the two orderings apart: if verification were
+// checked first, this would wrongly return EMAIL_NOT_VERIFIED, leaking
+// "this email is registered but unverified" to anyone who guesses an email
+// address, without knowing any password at all — the same enumeration
+// class Review Focus item 2 exists to prevent.
+func TestLogin_UnverifiedEmailWrongPassword_ReturnsInvalidCredentials(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	_, err := svc.Register(ctx, auth.RegisterInput{
+		Email: "unverified-wrong-pw@example.com", Password: "SecureP@ss123", DisplayName: "UnverifiedWrongPw",
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Login(ctx, auth.LoginInput{Email: "unverified-wrong-pw@example.com", Password: "TotallyWrong!99"})
+	require.Error(t, err)
+	appErr, ok := apperrors.As(err)
+	require.True(t, ok)
+	assert.Equal(t, "INVALID_CREDENTIALS", appErr.Code)
+}
+
 func TestRefreshTokens_ValidToken_IssuesNewPair(t *testing.T) {
 	svc := newTestService(t)
 	registerAndVerify(t, svc, "refresh-ok@example.com", "SecureP@ss123", "RefreshOK")

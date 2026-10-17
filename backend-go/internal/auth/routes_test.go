@@ -156,3 +156,38 @@ func TestRegisterRoutes_AuthLimiterBudgetIsSharedAcrossItsRoutes(t *testing.T) {
 	mux.ServeHTTP(forgotRec, forgotReq)
 	assert.Equal(t, http.StatusTooManyRequests, forgotRec.Code, "/forgot-password shares authLimiter's budget with /register for the same identifier")
 }
+
+// TestRegisterRoutes_RefreshAndLogoutAreNotRateLimited pins the other half
+// of Review Focus item 5: /refresh and /logout get no rate limiter at all
+// in the original, unlike every other mutating auth route. /refresh in
+// particular is hit on every access-token expiry (every 15 minutes by
+// default) — accidentally binding the 15min/5 authLimiter to it would lock
+// out any normal user after their 6th token refresh.
+func TestRegisterRoutes_RefreshAndLogoutAreNotRateLimited(t *testing.T) {
+	svc := newTestService(t)
+	h := auth.NewHandler(svc, logger.New("test"))
+	c := startCacheForAuth(t)
+	mux := httpserver.NewRouter(logger.New("test"), []string{"*"})
+	cfg := config.Config{NodeEnv: "production"}
+
+	auth.RegisterRoutes(mux, h, c, logger.New("test"), cfg)
+
+	remoteAddr := "9.9.9.9:6666"
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/refresh", bytes.NewBufferString(`{"refreshToken":"not-a-real-token"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "/refresh attempt %d must not be rate limited", i+1)
+	}
+
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", bytes.NewBufferString(`{"refreshToken":"not-a-real-token"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = remoteAddr
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusTooManyRequests, rec.Code, "/logout attempt %d must not be rate limited", i+1)
+	}
+}

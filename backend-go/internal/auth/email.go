@@ -1,14 +1,27 @@
 package auth
 
 import (
+	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/smtp"
 	"strconv"
 	"strings"
+	"time"
 
 	"nexus-connect/backend-go/internal/platform/config"
 )
+
+// smtpDefaultTimeout bounds every network operation in realSend (dial plus
+// every subsequent read/write) — net/smtp.SendMail itself sets no deadline
+// at all, so a server that accepts the TCP connection but never speaks (a
+// filtered egress port, a stalled/attacker-slowed peer) would otherwise
+// block the calling request goroutine indefinitely. The original bounds
+// this too (nodemailer's default connectionTimeout/socketTimeout), just
+// with different numbers; there's no original value to port here, only the
+// property that *some* bound must exist.
+const smtpDefaultTimeout = 30 * time.Second
 
 // sendFunc matches the shape of net/smtp.SendMail minus the smtp.Auth
 // parameter (constructed internally from cfg, since it's nil whenever
@@ -23,13 +36,14 @@ type sendFunc func(addr string, from string, to []string, msg []byte) error
 // block registration" in the original's own words — so nothing in this type
 // ever returns an error to its caller.
 type EmailSender struct {
-	cfg  config.Config
-	log  *slog.Logger
-	send sendFunc
+	cfg     config.Config
+	log     *slog.Logger
+	send    sendFunc
+	timeout time.Duration
 }
 
 func NewEmailSender(cfg config.Config, log *slog.Logger) *EmailSender {
-	e := &EmailSender{cfg: cfg, log: log}
+	e := &EmailSender{cfg: cfg, log: log, timeout: smtpDefaultTimeout}
 	e.send = e.realSend
 	return e
 }
@@ -40,6 +54,12 @@ func NewEmailSender(cfg config.Config, log *slog.Logger) *EmailSender {
 // it without needing internal-package test-only exports.
 func (e *EmailSender) SetSendFuncForTest(fn sendFunc) {
 	e.send = fn
+}
+
+// SetTimeoutForTest overrides realSend's dial/IO deadline, same rationale
+// as SetSendFuncForTest.
+func (e *EmailSender) SetTimeoutForTest(d time.Duration) {
+	e.timeout = d
 }
 
 // TODO(gap): smtp.SendMail only attempts STARTTLS opportunistically — if an
@@ -57,11 +77,58 @@ func (e *EmailSender) SetSendFuncForTest(fn sendFunc) {
 // implications (e.g. it would break a local dev SMTP catcher that doesn't
 // support STARTTLS at all) and belongs in the dedicated gap-fixing pass.
 func (e *EmailSender) realSend(addr string, from string, to []string, msg []byte) error {
-	var auth smtp.Auth
-	if e.cfg.SMTPUser != "" {
-		auth = smtp.PlainAuth("", e.cfg.SMTPUser, e.cfg.SMTPPassword, e.cfg.SMTPHost)
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
 	}
-	return smtp.SendMail(addr, auth, from, to, msg)
+
+	conn, err := net.DialTimeout("tcp", addr, e.timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(e.timeout)); err != nil {
+		return err
+	}
+
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err := client.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return err
+		}
+	}
+
+	if e.cfg.SMTPUser != "" {
+		if err := client.Auth(smtp.PlainAuth("", e.cfg.SMTPUser, e.cfg.SMTPPassword, host)); err != nil {
+			return err
+		}
+	}
+
+	if err := client.Mail(from); err != nil {
+		return err
+	}
+	for _, rcpt := range to {
+		if err := client.Rcpt(rcpt); err != nil {
+			return err
+		}
+	}
+
+	w, err := client.Data()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(msg); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return client.Quit()
 }
 
 func (e *EmailSender) SendVerificationEmail(to, code string) {
