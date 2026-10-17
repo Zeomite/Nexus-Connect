@@ -1999,6 +1999,18 @@ func TestHandlerUpdateMe_InvalidProfilePictureURL_Returns422(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 }
 
+// TestHandlerUpdateMe_NonHTTPSchemeProfilePictureURL_Returns422 pins a
+// deliberate hardening beyond the original (see Task 4's ledger entry):
+// a syntactically valid but non-http(s) scheme (javascript:, data:, etc.)
+// must be rejected too, not just a malformed string.
+func TestHandlerUpdateMe_NonHTTPSchemeProfilePictureURL_Returns422(t *testing.T) {
+	h, store := newTestHandler(t)
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000073", "jsscheme@example.com", "6000000014", "JSScheme", "online")
+
+	rec := doAuthedJSON(t, h.UpdateMe, http.MethodPatch, "00000000-0000-0000-0000-000000000073", `{"profilePictureUrl":"javascript:alert(1)"}`, nil)
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+}
+
 func TestHandlerUpdateMyStatus_ValidStatus_Returns200(t *testing.T) {
 	h, store := newTestHandler(t)
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000065", "status1@example.com", "6000000006", "Status1", "offline")
@@ -2278,7 +2290,18 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if req.ProfilePictureURL.Set && req.ProfilePictureURL.Value != nil {
-		if _, err := url.ParseRequestURI(*req.ProfilePictureURL.Value); err != nil {
+		// Beyond url.ParseRequestURI's bare syntax check: restrict to
+		// http(s) schemes. The original's own validation here
+		// (z.string().url(), backend/packages/shared/src/types/user.ts:50)
+		// has the identical gap — Zod's .url() accepts any syntactically
+		// valid URI scheme, including javascript:/data:/file:, via JS's
+		// URL constructor. A deliberate, free hardening beyond the
+		// original (an avatar URL has no legitimate reason to be
+		// anything but http/https), caught by an automated security scan
+		// of Task 4's commit and fixed here at the layer where validation
+		// belongs, not retrofitted into Store.
+		parsed, err := url.ParseRequestURI(*req.ProfilePictureURL.Value)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return apperrors.Validation("Validation failed", map[string]any{
 				"profilePictureUrl": "failed on the 'url' rule",
 			})
@@ -2431,7 +2454,7 @@ Add `"mime/multipart"` to this file's imports.
 - [ ] **Step 7: Run the test to verify it passes**
 
 Run: `cd backend-go && go test -tags=integration ./internal/user/... -v -run TestHandler`
-Expected: PASS, all 14 tests green.
+Expected: PASS, all 15 tests green.
 
 - [ ] **Step 8: Commit**
 
