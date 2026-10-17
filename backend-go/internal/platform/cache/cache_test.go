@@ -10,6 +10,7 @@ import (
 
 	"nexus-connect/backend-go/internal/platform/cache"
 
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -103,14 +104,36 @@ func TestMGet_AllMissingReturnsEmptyMap(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-func TestSAddSRem_DoNotError(t *testing.T) {
+// TestSAddSRem_ActuallyAddsAndRemovesMembers verifies more than "no
+// error" — SAdd passes its []string members parameter to go-redis's
+// SAdd(ctx, key, members ...interface{}) without a "..." spread, which
+// means go-redis receives a length-1 variadic slice holding the whole
+// []string as one element, not N separate members. go-redis's own
+// appendArgs/appendArg special-cases this exact shape (a single []string
+// argument) and flattens it back into N members before writing the
+// command — but that's an internal implementation detail of go-redis,
+// not a documented contract, so this bypasses cache.Cache (which exposes
+// no set-read method; nothing in this codebase needs one, see Global
+// Constraints' online:users dead-write note) and checks the real Redis
+// state directly, the same way the Task 1 review verified it.
+func TestSAddSRem_ActuallyAddsAndRemovesMembers(t *testing.T) {
 	addr := startRedis(t)
 	c := cache.New(addr, "", 0)
 	defer c.Close()
 	ctx := context.Background()
 
 	require.NoError(t, c.SAdd(ctx, "myset", "user-1", "user-2"))
+
+	raw := goredis.NewClient(&goredis.Options{Addr: addr})
+	defer raw.Close()
+	members, err := raw.SMembers(ctx, "myset").Result()
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"user-1", "user-2"}, members, "SAdd must land both members individually, not as one serialized blob")
+
 	require.NoError(t, c.SRem(ctx, "myset", "user-1"))
+	members, err = raw.SMembers(ctx, "myset").Result()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user-2"}, members)
 }
 
 func TestEval_SlidingWindowScriptPattern(t *testing.T) {
