@@ -10,6 +10,14 @@ import (
 
 type HandlerFunc func(w http.ResponseWriter, r *http.Request) error
 
+// maxRequestBodyBytes matches Fastify's documented default bodyLimit (1
+// MiB), which the original services never override (confirmed via grep —
+// no service passes a `bodyLimit` option to its Fastify(...) constructor).
+// Without an equivalent cap, a handler that reads/decodes the full body
+// (every handler in this codebase does, via json.Decode) would buffer an
+// attacker-controlled, unbounded amount of data in memory.
+const maxRequestBodyBytes = 1 << 20
+
 // statusTrackingWriter records whether a response has already been started
 // (WriteHeader or Write called), so Wrap and recoverer can tell whether it's
 // still safe to write a different response on top, instead of risking a
@@ -43,6 +51,7 @@ func (w *statusTrackingWriter) Write(b []byte) (int, error) {
 // TypeScript services' global error handlers produce.
 func Wrap(log *slog.Logger, fn HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		sw := &statusTrackingWriter{ResponseWriter: w}
 		err := fn(sw, r)
 		if err == nil {

@@ -118,6 +118,50 @@ func TestHandlerUpdatePassword_NoMaxLengthOnPassword(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rec.Code, "must fail with TOKEN_EXPIRED's 401, not a validation 422")
 }
 
+// TestHandlerLogin_EmptyPassword_Returns401NotValidationError pins a real
+// input-validation parity gap: the original's LoginUserSchema is
+// `password: z.string()` with no `.min()`, so an empty-string password
+// passes validation and falls through to bcrypt comparison, returning 401
+// INVALID_CREDENTIALS — never a 422. A `required` validate tag on this
+// field would reject it at validation instead, which the original doesn't.
+func TestHandlerLogin_EmptyPassword_Returns401NotValidationError(t *testing.T) {
+	h := newTestHandler(t)
+	rec := doJSON(t, h.Login, http.MethodPost, `{"email":"nobody@example.com","password":""}`)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestHandlerRefresh_EmptyRefreshToken_Returns401NotValidationError mirrors
+// the Login case above for RefreshTokenSchema (`refreshToken: z.string()`,
+// no `.min()`): an empty string must reach RefreshTokens and fail with 401
+// INVALID_TOKEN, not 422.
+func TestHandlerRefresh_EmptyRefreshToken_Returns401NotValidationError(t *testing.T) {
+	h := newTestHandler(t)
+	rec := doJSON(t, h.Refresh, http.MethodPost, `{"refreshToken":""}`)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestHandlerLogout_EmptyRefreshToken_Returns200 mirrors the Refresh case:
+// the original's logout route shares RefreshTokenSchema too, and deleting
+// an empty-string key is the same idempotent no-op as deleting an unknown
+// one — 200, never 422.
+func TestHandlerLogout_EmptyRefreshToken_Returns200(t *testing.T) {
+	h := newTestHandler(t)
+	rec := doJSON(t, h.Logout, http.MethodPost, `{"refreshToken":""}`)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestHandlerUpdatePassword_EmptyResetToken_Returns401NotValidationError:
+// the original's update-password route has no Zod schema call at all for
+// resetToken (it's destructured directly from the body, validated only by
+// Fastify's route-level JSON schema, which is `{type: 'string'}` with no
+// minLength) — an empty string reaches updatePassword and fails downstream
+// (401 TOKEN_EXPIRED/INVALID_TOKEN), never 422.
+func TestHandlerUpdatePassword_EmptyResetToken_Returns401NotValidationError(t *testing.T) {
+	h := newTestHandler(t)
+	rec := doJSON(t, h.UpdatePassword, http.MethodPost, `{"email":"nobody@example.com","resetToken":"","password":"NewP@ssw0rd99"}`)
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
 func TestHandlerForgotPassword_AlwaysReturns200WithGenericMessage(t *testing.T) {
 	h := newTestHandler(t)
 	rec := doJSON(t, h.ForgotPassword, http.MethodPost, `{"email":"ghost-handler@example.com"}`)

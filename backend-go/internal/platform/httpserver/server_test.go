@@ -1,8 +1,10 @@
 package httpserver_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -185,6 +187,30 @@ func TestWrap_ErrorAfterResponseAlreadyStartedDoesNotCorruptIt(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code, "the original response status must not be overwritten")
 	assert.Equal(t, "partial", rec.Body.String())
+}
+
+// TestWrap_OversizedBodyIsRejected guards against unbounded memory use from
+// a huge request body: the original Fastify server has an implicit 1 MiB
+// bodyLimit (Fastify's documented default, never overridden in server.ts),
+// which rejects an oversized body before a route handler's own decoding
+// logic ever runs. Without an equivalent cap here, any handler that reads
+// the full body (e.g. json.Decode into a DTO) would buffer an
+// attacker-controlled, unbounded amount of data in memory.
+func TestWrap_OversizedBodyIsRejected(t *testing.T) {
+	log := logger.New("test")
+	handler := httpserver.Wrap(log, func(w http.ResponseWriter, r *http.Request) error {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			return apperrors.BadRequest("Invalid request body", nil)
+		}
+		return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"ok": "true"})
+	})
+
+	oversized := bytes.Repeat([]byte("a"), (1<<20)+1) // one byte over the 1 MiB cap
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(oversized))
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func assertAnError() error {
