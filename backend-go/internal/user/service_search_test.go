@@ -5,6 +5,13 @@ package user_test
 import (
 	"context"
 	"testing"
+	"time"
+
+	"nexus-connect/backend-go/internal/platform/cache"
+	"nexus-connect/backend-go/internal/platform/config"
+	"nexus-connect/backend-go/internal/platform/events"
+	"nexus-connect/backend-go/internal/platform/logger"
+	"nexus-connect/backend-go/internal/user"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +25,27 @@ func TestFindByUniqueNumber_Found(t *testing.T) {
 	profile, err := svc.FindByUniqueNumber(ctx, "4000000001")
 	require.NoError(t, err)
 	assert.Equal(t, "FBN", profile.DisplayName)
+}
+
+// TestFindByUniqueNumber_PrefersCachedStatusOverDBStatus closes a review
+// gap: TestFindByUniqueNumber_Found above only asserts DisplayName, never
+// proving cachedStatusOr(ctx, row.ID, row.Status) is actually keyed by
+// row.ID and not some other field (e.g. a mistaken row.UniqueNumber) --
+// the same property Task 6/7 already pin for GetProfile/GetStatus.
+func TestFindByUniqueNumber_PrefersCachedStatusOverDBStatus(t *testing.T) {
+	store := startStore(t)
+	c := startCacheForUser(t)
+	bus := events.NewBus(logger.New("test"))
+	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
+	svc := user.NewService(store, c, bus, cfg, logger.New("test"))
+	ctx := context.Background()
+
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000045", "fbncache@example.com", "4000000006", "FBNCache", "offline")
+	require.NoError(t, c.Set(ctx, cache.UserStatusKey("00000000-0000-0000-0000-000000000045"), "busy", time.Minute))
+
+	profile, err := svc.FindByUniqueNumber(ctx, "4000000006")
+	require.NoError(t, err)
+	assert.Equal(t, "busy", profile.Status, "cache must win over the DB's offline value")
 }
 
 func TestFindByUniqueNumber_NotFound_ReturnsNotFoundError(t *testing.T) {

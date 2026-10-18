@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"nexus-connect/backend-go/internal/platform/cache"
@@ -15,10 +16,11 @@ type Service struct {
 	cache *cache.Cache
 	bus   *events.Bus
 	cfg   config.Config
+	log   *slog.Logger
 }
 
-func NewService(store *Store, c *cache.Cache, bus *events.Bus, cfg config.Config) *Service {
-	return &Service{store: store, cache: c, bus: bus, cfg: cfg}
+func NewService(store *Store, c *cache.Cache, bus *events.Bus, cfg config.Config, log *slog.Logger) *Service {
+	return &Service{store: store, cache: c, bus: bus, cfg: cfg, log: log}
 }
 
 type Profile struct {
@@ -43,12 +45,25 @@ type PublicProfile struct {
 // dbStatus on a cache miss — shared by GetProfile and GetPublicProfile
 // (and reused by GetStatus/GetStatuses in service_status.go) so the
 // "cache wins when present" rule (Review Focus item 2) lives in one place.
+//
+// A clean miss (cache.ErrNotFound) and a genuine Redis failure (connection
+// refused, auth failure, etc.) both fall back to dbStatus — failing open to
+// Postgres's durable data is a deliberately better choice than the
+// original's own behavior here (user.service.ts has no try/catch around
+// its Redis read, so a real outage there fails the whole request). What
+// must not happen silently is the genuine-failure case going unnoticed:
+// only that case is logged, so an outage stays observable without making
+// the common, harmless cache-miss case noisy.
 func (s *Service) cachedStatusOr(ctx context.Context, userID, dbStatus string) string {
 	cached, err := s.cache.Get(ctx, cache.UserStatusKey(userID))
-	if err != nil {
-		return dbStatus
+	if err == nil {
+		return cached
 	}
-	return cached
+	if err != cache.ErrNotFound {
+		s.log.Warn("cache read failed, falling back to database status",
+			"error", err, "userID", userID)
+	}
+	return dbStatus
 }
 
 // GetProfile mirrors UserService.getProfile — includes email, for the

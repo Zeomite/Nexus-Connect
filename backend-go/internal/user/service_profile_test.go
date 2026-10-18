@@ -3,6 +3,7 @@
 package user_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func newTestService(t *testing.T) (*user.Service, *user.Store) {
 	c := startCacheForUser(t)
 	bus := events.NewBus(logger.New("test"))
 	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
-	return user.NewService(store, c, bus, cfg), store
+	return user.NewService(store, c, bus, cfg, logger.New("test")), store
 }
 
 func TestGetProfile_ReturnsFullProfileIncludingEmail(t *testing.T) {
@@ -68,7 +69,7 @@ func TestGetProfile_PrefersCachedStatusOverDBStatus(t *testing.T) {
 	c := startCacheForUser(t)
 	bus := events.NewBus(logger.New("test"))
 	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
-	svc := user.NewService(store, c, bus, cfg)
+	svc := user.NewService(store, c, bus, cfg, logger.New("test"))
 	ctx := context.Background()
 
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000021", "cached@example.com", "2000000002", "Cached", "offline")
@@ -86,11 +87,46 @@ func TestGetProfile_NotFound_ReturnsNotFoundError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestGetProfile_GenuineCacheErrorFallsBackToDBAndLogs: a Review-driven
+// regression test. cachedStatusOr's `if err != nil { return dbStatus }`
+// used to treat a clean cache miss (cache.ErrNotFound) and a genuine Redis
+// failure (connection refused, auth failure, etc.) identically -- falling
+// back to the DB silently either way. The original (user.service.ts) has
+// no try/catch around its Redis read, so a real Redis outage there fails
+// the whole request instead of degrading silently. Failing open here is a
+// deliberate, better choice than matching that fragility (Postgres has the
+// durable data right there), but the silence was a real gap: an outage
+// should be observable. This pins both halves: the fallback still happens
+// (status comes from the DB), and it's now logged.
+func TestGetProfile_GenuineCacheErrorFallsBackToDBAndLogs(t *testing.T) {
+	store := startStore(t)
+	ctx := context.Background()
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000027", "logtest@example.com", "2000000008", "LogTest", "offline")
+
+	// Port 1 has nothing listening -- go-redis's lazy connection fails with
+	// a real connection error on the first command, never cache.ErrNotFound.
+	unreachableCache := cache.New("127.0.0.1:1", "", 0)
+	bus := events.NewBus(logger.New("test"))
+	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
+	var logBuf bytes.Buffer
+	svc := user.NewService(store, unreachableCache, bus, cfg, logger.NewWithWriter("test", &logBuf))
+
+	profile, err := svc.GetProfile(ctx, "00000000-0000-0000-0000-000000000027")
+	require.NoError(t, err)
+	assert.Equal(t, "offline", profile.Status, "a genuine cache error must still fall back to the DB value")
+	assert.Contains(t, logBuf.String(), "WARN", "a genuine cache error (not a clean miss) must be logged, not silently swallowed")
+}
+
 // TestGetPublicProfile_ResponseNeverHasEmailField pins Review Focus item 1
-// at the type level: PublicProfile has no Email field, so there is no way
-// for a caller of this method to accidentally serialize one, unlike a
-// shared struct where a handler might just happen to omit the field most
-// of the time.
+// at the type level: PublicProfile has no Email field today, verified by
+// direct inspection of the struct (service_profile.go) -- not, as an
+// earlier version of this comment incorrectly claimed, because adding an
+// unreferenced field to a Go struct would force a compile error anywhere.
+// It wouldn't: Go happily compiles a struct with an added, unused field,
+// and this test would keep passing unchanged even if PublicProfile grew
+// an Email field tomorrow. The real guard against that regression is
+// Task 10's TestHandlerGetByID_ResponseNeverContainsEmailKey, which checks
+// the actual JSON wire body a client receives, not the Go type.
 func TestGetPublicProfile_ResponseNeverHasEmailField(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
@@ -99,9 +135,6 @@ func TestGetPublicProfile_ResponseNeverHasEmailField(t *testing.T) {
 	profile, err := svc.GetPublicProfile(ctx, "00000000-0000-0000-0000-000000000022")
 	require.NoError(t, err)
 	assert.Equal(t, "No Leak", profile.DisplayName)
-	// No assertion needed on an "Email" field — PublicProfile has none;
-	// this test exists to force a compile error if that field is ever
-	// added back to this type.
 }
 
 func TestGetPublicProfile_NotFound_ReturnsNotFoundError(t *testing.T) {
@@ -171,4 +204,19 @@ func TestUpdateProfile_RealURLSetsPicture(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, profile.ProfilePictureURL)
 	assert.Equal(t, "https://example.com/new.png", *profile.ProfilePictureURL)
+}
+
+// TestUpdateProfile_NoFieldsSet_ReturnsCurrentProfile closes a review gap:
+// Store.UpdateProfile's zero-fields-set -> nil fallback was only tested at
+// the Store layer (store_test.go, Task 4); this pins the Service's own
+// fallback to GetPublicProfile on that nil, which store_test.go's test
+// can't exercise since it calls Store directly, bypassing Service entirely.
+func TestUpdateProfile_NoFieldsSet_ReturnsCurrentProfile(t *testing.T) {
+	svc, store := newTestService(t)
+	ctx := context.Background()
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000028", "nochange@example.com", "2000000009", "NoChange", "online")
+
+	profile, err := svc.UpdateProfile(ctx, "00000000-0000-0000-0000-000000000028", user.ProfileUpdate{})
+	require.NoError(t, err, "zero fields set must not error, it must fall back to reading the current profile")
+	assert.Equal(t, "NoChange", profile.DisplayName)
 }

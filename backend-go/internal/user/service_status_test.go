@@ -6,8 +6,16 @@ import (
 	"context"
 	"testing"
 
+	"nexus-connect/backend-go/internal/platform/cache"
+	"nexus-connect/backend-go/internal/platform/config"
+	"nexus-connect/backend-go/internal/platform/events"
+	"nexus-connect/backend-go/internal/platform/logger"
+	"nexus-connect/backend-go/internal/user"
+
+	goredis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 )
 
 func TestUpdateStatus_WritesCacheAndDB(t *testing.T) {
@@ -99,4 +107,44 @@ func TestUpdateStatus_OnlineUsersSetWriteDoesNotError(t *testing.T) {
 
 	require.NoError(t, svc.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000036", "online"))
 	require.NoError(t, svc.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000036", "offline"))
+}
+
+// TestUpdateStatus_ActuallyUpdatesOnlineUsersSet closes a review gap: the
+// test above only proved the write doesn't error, not that it uses the
+// right key/member -- a swapped SAdd(ctx, userID, cache.OnlineUsersKey())
+// argument order, or a case-sensitivity mismatch on "online"/"offline",
+// would pass it just as easily. This checks real Redis state directly via
+// a raw go-redis client (same technique as Task 1's own
+// TestSAddSRem_ActuallyAddsAndRemovesMembers), bypassing newTestService
+// since cache.Cache itself still exposes no set-read method.
+func TestUpdateStatus_ActuallyUpdatesOnlineUsersSet(t *testing.T) {
+	store := startStore(t)
+	ctx := context.Background()
+
+	container, err := tcredis.Run(ctx, "redis:7-alpine")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = container.Terminate(context.Background()) })
+	connStr, err := container.ConnectionString(ctx)
+	require.NoError(t, err)
+	addr := stripRedisScheme(connStr)
+
+	c := cache.New(addr, "", 0)
+	bus := events.NewBus(logger.New("test"))
+	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
+	svc := user.NewService(store, c, bus, cfg, logger.New("test"))
+
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000037", "online2@example.com", "3000000008", "Online2", "offline")
+
+	require.NoError(t, svc.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000037", "online"))
+
+	raw := goredis.NewClient(&goredis.Options{Addr: addr})
+	defer raw.Close()
+	members, err := raw.SMembers(ctx, cache.OnlineUsersKey()).Result()
+	require.NoError(t, err)
+	assert.Contains(t, members, "00000000-0000-0000-0000-000000000037")
+
+	require.NoError(t, svc.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000037", "offline"))
+	members, err = raw.SMembers(ctx, cache.OnlineUsersKey()).Result()
+	require.NoError(t, err)
+	assert.NotContains(t, members, "00000000-0000-0000-0000-000000000037")
 }
