@@ -1,0 +1,215 @@
+package user
+
+import (
+	"encoding/json"
+	"log/slog"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+
+	platformauth "nexus-connect/backend-go/internal/platform/auth"
+	apperrors "nexus-connect/backend-go/internal/platform/errors"
+	"nexus-connect/backend-go/internal/platform/httpserver"
+	"nexus-connect/backend-go/internal/platform/validate"
+
+	"github.com/go-chi/chi/v5"
+)
+
+type Handler struct {
+	svc *Service
+	log *slog.Logger
+}
+
+func NewHandler(svc *Service, log *slog.Logger) *Handler {
+	return &Handler{svc: svc, log: log}
+}
+
+// callerID reads the authenticated caller's user ID, attached by
+// platformauth.Middleware (see routes.go) before any handler here runs.
+func callerID(r *http.Request) string {
+	payload, _ := platformauth.FromContext(r.Context())
+	return payload.UserID
+}
+
+func decodeAndValidate[T any](r *http.Request) (T, error) {
+	var req T
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return req, apperrors.BadRequest("Invalid request body", nil)
+	}
+	if err := validate.Struct(req); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+func profileJSON(p Profile) map[string]any {
+	return map[string]any{
+		"id":                p.ID,
+		"email":             p.Email,
+		"uniqueNumber":      p.UniqueNumber,
+		"displayName":       p.DisplayName,
+		"profilePictureUrl": p.ProfilePictureURL,
+		"status":            p.Status,
+		"createdAt":         p.CreatedAt,
+	}
+}
+
+func publicProfileJSON(p PublicProfile) map[string]any {
+	return map[string]any{
+		"id":                p.ID,
+		"displayName":       p.DisplayName,
+		"uniqueNumber":      p.UniqueNumber,
+		"profilePictureUrl": p.ProfilePictureURL,
+		"status":            p.Status,
+	}
+}
+
+func (h *Handler) Me(w http.ResponseWriter, r *http.Request) error {
+	profile, err := h.svc.GetProfile(r.Context(), callerID(r))
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, profileJSON(profile))
+}
+
+// GetByID uses GetPublicProfile, never GetProfile -- this is the fix for
+// the original's email-leak bug, see this plan's Global Constraints.
+func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) error {
+	userID := chi.URLParam(r, "userId")
+	profile, err := h.svc.GetPublicProfile(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, publicProfileJSON(profile))
+}
+
+func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) error {
+	req, err := decodeAndValidate[updateProfileRequest](r)
+	if err != nil {
+		return err
+	}
+
+	if req.ProfilePictureURL.Set && req.ProfilePictureURL.Value != nil {
+		// Beyond url.ParseRequestURI's bare syntax check: restrict to
+		// http(s) schemes. The original's own validation here
+		// (z.string().url(), backend/packages/shared/src/types/user.ts:50)
+		// has the identical gap — Zod's .url() accepts any syntactically
+		// valid URI scheme, including javascript:/data:/file:, via JS's
+		// URL constructor. A deliberate, free hardening beyond the
+		// original (an avatar URL has no legitimate reason to be
+		// anything but http/https), caught by an automated security scan
+		// of Task 4's commit and fixed here at the layer where validation
+		// belongs, not retrofitted into Store.
+		parsed, err := url.ParseRequestURI(*req.ProfilePictureURL.Value)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return apperrors.Validation("Validation failed", map[string]any{
+				"profilePictureUrl": "failed on the 'url' rule",
+			})
+		}
+	}
+
+	profile, err := h.svc.UpdateProfile(r.Context(), callerID(r), ProfileUpdate{
+		DisplayName:       req.DisplayName,
+		ProfilePictureURL: req.ProfilePictureURL,
+	})
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, publicProfileJSON(profile))
+}
+
+func (h *Handler) UpdateMyStatus(w http.ResponseWriter, r *http.Request) error {
+	req, err := decodeAndValidate[updateStatusRequest](r)
+	if err != nil {
+		return err
+	}
+
+	if err := h.svc.UpdateStatus(r.Context(), callerID(r), req.Status); err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"status": req.Status})
+}
+
+func (h *Handler) GetStatusByID(w http.ResponseWriter, r *http.Request) error {
+	userID := chi.URLParam(r, "userId")
+	status, err := h.svc.GetStatus(r.Context(), userID)
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"userId": userID, "status": status})
+}
+
+func (h *Handler) GetStatuses(w http.ResponseWriter, r *http.Request) error {
+	req, err := decodeAndValidate[statusesRequest](r)
+	if err != nil {
+		return err
+	}
+
+	statuses, err := h.svc.GetStatuses(r.Context(), req.UserIDs)
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, map[string]any{"statuses": statuses})
+}
+
+var allowedAvatarMimeTypes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// UploadAvatar must be mounted via httpserver.WrapWithBodyLimit with a
+// larger cap than Wrap's package default (see routes.go) -- the original
+// allows up to 5 MiB (@fastify/multipart's configured limit).
+func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) error {
+	reader, err := r.MultipartReader()
+	if err != nil {
+		return apperrors.BadRequest("Invalid request body", nil)
+	}
+
+	// Grabs the first file part regardless of its field name, mirroring
+	// @fastify/multipart's request.file(), which does the same.
+	var part *multipart.Part
+	for {
+		p, err := reader.NextPart()
+		if err != nil {
+			break
+		}
+		if p.FileName() != "" {
+			part = p
+			break
+		}
+	}
+
+	if part == nil {
+		return apperrors.BadRequest("No file uploaded", nil)
+	}
+
+	contentType := part.Header.Get("Content-Type")
+	if !allowedAvatarMimeTypes[contentType] {
+		return apperrors.BadRequest("Invalid file type. Allowed: JPEG, PNG, GIF, WebP", nil)
+	}
+
+	ext := extensionForMimeType(contentType)
+	url, err := h.svc.UploadAvatar(r.Context(), callerID(r), ext)
+	if err != nil {
+		return err
+	}
+	return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"profilePictureUrl": url})
+}
+
+func extensionForMimeType(mimeType string) string {
+	switch mimeType {
+	case "image/jpeg":
+		return "jpeg"
+	case "image/png":
+		return "png"
+	case "image/gif":
+		return "gif"
+	case "image/webp":
+		return "webp"
+	default:
+		return "bin"
+	}
+}
