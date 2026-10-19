@@ -3,6 +3,7 @@
 package user_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -61,6 +62,30 @@ func TestGetStatus_PrefersCacheOverStaleDB(t *testing.T) {
 	assert.Equal(t, "busy", status, "cache must win over a later, cache-bypassing DB write")
 }
 
+// TestGetStatus_GenuineCacheErrorFallsBackToDBAndLogs mirrors
+// TestGetProfile_GenuineCacheErrorFallsBackToDBAndLogs's pattern
+// (service_profile_test.go) for GetStatus specifically -- it had the
+// identical err != nil fallback as cachedStatusOr before that review
+// fix, but was never updated when cachedStatusOr was, so a genuine
+// Redis outage degraded to the DB value silently instead of logging a
+// Warn like every other cache-backed read in this module now does.
+func TestGetStatus_GenuineCacheErrorFallsBackToDBAndLogs(t *testing.T) {
+	store := startStore(t)
+	ctx := context.Background()
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000036", "statuslogtest@example.com", "3000000007", "StatusLogTest", "away")
+
+	unreachableCache := cache.New("127.0.0.1:1", "", 0)
+	bus := events.NewBus(logger.New("test"))
+	cfg := config.Config{StorageBucket: "test-bucket", StorageRegion: "us-east-1"}
+	var logBuf bytes.Buffer
+	svc := user.NewService(store, unreachableCache, bus, cfg, logger.NewWithWriter("test", &logBuf))
+
+	status, err := svc.GetStatus(ctx, "00000000-0000-0000-0000-000000000036")
+	require.NoError(t, err)
+	assert.Equal(t, "away", status, "a genuine cache error must still fall back to the DB value")
+	assert.Contains(t, logBuf.String(), "WARN", "a genuine cache error (not a clean miss) must be logged, not silently swallowed")
+}
+
 func TestGetStatus_NonExistentUser_ReturnsOfflineNotError(t *testing.T) {
 	svc, _ := newTestService(t)
 	status, err := svc.GetStatus(context.Background(), "00000000-0000-0000-0000-000000000099")
@@ -78,10 +103,14 @@ func TestGetStatuses_MixOfCacheHitsAndMisses(t *testing.T) {
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000034", "mix2@example.com", "3000000005", "Mix2", "busy")
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000035", "mix3@example.com", "3000000006", "Mix3", "away")
 
-	// Only user 33 gets a cache entry, and it diverges from its own DB row
-	// (set to offline in Postgres) -- proving this one's answer came from
-	// the cache, not a DB fallback that happened to agree by coincidence.
+	// Only user 33 gets a cache entry, and it's then made to diverge from
+	// its own DB row -- UpdateStatus writes both cache and DB identically,
+	// so without the second write below the two would agree by
+	// coincidence and a DB-first GetStatuses bug (e.g. the DB fallback
+	// query overwriting a value Redis already supplied) would pass this
+	// test undetected.
 	require.NoError(t, svc.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000033", "online"))
+	require.NoError(t, store.UpdateStatus(ctx, "00000000-0000-0000-0000-000000000033", "offline"))
 
 	statuses, err := svc.GetStatuses(ctx, []string{
 		"00000000-0000-0000-0000-000000000033",

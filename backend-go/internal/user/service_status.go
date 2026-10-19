@@ -46,6 +46,10 @@ func (s *Service) GetStatus(ctx context.Context, userID string) (string, error) 
 	if err == nil {
 		return cached, nil
 	}
+	if err != cache.ErrNotFound {
+		s.log.Warn("cache read failed, falling back to database status",
+			"error", err, "userID", userID)
+	}
 
 	status, err := s.store.StatusByID(ctx, userID)
 	if err != nil {

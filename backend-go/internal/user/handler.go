@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"time"
 
 	platformauth "nexus-connect/backend-go/internal/platform/auth"
 	apperrors "nexus-connect/backend-go/internal/platform/errors"
@@ -44,6 +45,17 @@ func decodeAndValidate[T any](r *http.Request) (T, error) {
 	return req, nil
 }
 
+// formatCreatedAt matches the original's `created_at.toISOString()`:
+// always UTC, "Z" suffix, millisecond precision. pgx decodes timestamptz
+// into the server process's own *time.Location, so a raw time.Time
+// marshaled by encoding/json (RFC3339Nano, that same local offset) would
+// vary by deployment TZ and use microseconds instead -- the frontend's
+// date-grouping code assumes a UTC-normalized string, same as the
+// original always sent.
+func formatCreatedAt(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000Z07:00")
+}
+
 func profileJSON(p Profile) map[string]any {
 	return map[string]any{
 		"id":                p.ID,
@@ -52,7 +64,7 @@ func profileJSON(p Profile) map[string]any {
 		"displayName":       p.DisplayName,
 		"profilePictureUrl": p.ProfilePictureURL,
 		"status":            p.Status,
-		"createdAt":         p.CreatedAt,
+		"createdAt":         formatCreatedAt(p.CreatedAt),
 	}
 }
 

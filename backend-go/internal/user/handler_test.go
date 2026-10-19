@@ -115,6 +115,30 @@ func TestHandlerGetStatusByID_InvalidUUIDFormat_Returns422(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 }
 
+// TestHandlerMe_CreatedAtIsUTCWithMillisecondPrecision pins the wire
+// format of createdAt against the original's `created_at.toISOString()`
+// (always UTC, "Z" suffix, millisecond precision) -- a raw time.Time
+// marshals via encoding/json as RFC3339Nano in the server process's own
+// *time.Location (microseconds, a numeric offset instead of "Z"), which
+// is both a format mismatch and environment-dependent: the same DB row
+// would serialize differently depending on the container's TZ.
+func TestHandlerMe_CreatedAtIsUTCWithMillisecondPrecision(t *testing.T) {
+	h, store := newTestHandler(t)
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000076", "createdat@example.com", "6000000017", "CreatedAt", "online")
+	_, err := testDB.Exec(context.Background(),
+		"UPDATE users SET created_at = $1 WHERE id = $2",
+		"2026-01-15T10:30:00.123Z", "00000000-0000-0000-0000-000000000076",
+	)
+	require.NoError(t, err)
+
+	rec := doAuthedJSON(t, h.Me, http.MethodGet, "00000000-0000-0000-0000-000000000076", "", nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "2026-01-15T10:30:00.123Z", body["createdAt"])
+}
+
 func TestHandlerUpdateMe_DisplayNameOnly_Returns200(t *testing.T) {
 	h, store := newTestHandler(t)
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000062", "updme@example.com", "6000000003", "Old", "online")
@@ -183,6 +207,27 @@ func TestHandlerUpdateMe_BothFieldsSet_Returns200(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "New Name", body["displayName"])
 	assert.Equal(t, "https://example.com/new.png", body["profilePictureUrl"])
+}
+
+// TestHandlerUpdateMe_ExplicitNullProfilePictureURL_ClearsColumn pins
+// Review Focus item 3's "explicitly null" state specifically over the
+// real wire path (decodeAndValidate -> OptionalString.UnmarshalJSON ->
+// ProfileUpdate), not constructed by hand in Go.
+func TestHandlerUpdateMe_ExplicitNullProfilePictureURL_ClearsColumn(t *testing.T) {
+	h, store := newTestHandler(t)
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000075", "clearpic@example.com", "6000000016", "ClearPic", "online")
+	require.NoError(t, store.UpdateProfilePicture(context.Background(), "00000000-0000-0000-0000-000000000075", "https://example.com/old.png"))
+
+	rec := doAuthedJSON(t, h.UpdateMe, http.MethodPatch, "00000000-0000-0000-0000-000000000075", `{"profilePictureUrl":null}`, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Nil(t, body["profilePictureUrl"])
+
+	row, err := store.ProfileByID(context.Background(), "00000000-0000-0000-0000-000000000075")
+	require.NoError(t, err)
+	assert.Nil(t, row.ProfilePictureURL, "an explicit null must clear the column, not leave it untouched")
 }
 
 func TestHandlerUpdateMyStatus_ValidStatus_Returns200(t *testing.T) {
@@ -328,6 +373,8 @@ func TestHandlerUploadAvatar_OverSizeLimit_Returns413(t *testing.T) {
 func TestHandlerUploadAvatar_DisallowedMimeType_Returns400(t *testing.T) {
 	h, store := newTestHandler(t)
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000071", "badmime@example.com", "6000000012", "BadMime", "online")
+	ctx := context.Background()
+	require.NoError(t, store.UpdateProfilePicture(ctx, "00000000-0000-0000-0000-000000000071", "https://example.com/keep.png"))
 
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
@@ -343,12 +390,17 @@ func TestHandlerUploadAvatar_DisallowedMimeType_Returns400(t *testing.T) {
 	wrapped := httpserver.WrapWithBodyLimit(logger.New("test"), h.UploadAvatar, 5<<20)
 	req := httptest.NewRequest(http.MethodPost, "/", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	ctx := context.WithValue(req.Context(), platformauth.UserContextKey, platformauth.TokenPayload{UserID: "00000000-0000-0000-0000-000000000071"})
-	req = req.WithContext(ctx)
+	reqCtx := context.WithValue(req.Context(), platformauth.UserContextKey, platformauth.TokenPayload{UserID: "00000000-0000-0000-0000-000000000071"})
+	req = req.WithContext(reqCtx)
 	rec := httptest.NewRecorder()
 	wrapped(rec, req)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	row, err := store.ProfileByID(ctx, "00000000-0000-0000-0000-000000000071")
+	require.NoError(t, err)
+	require.NotNil(t, row.ProfilePictureURL)
+	assert.Equal(t, "https://example.com/keep.png", *row.ProfilePictureURL, "a rejected MIME type must never overwrite the user's existing avatar")
 }
 
 func TestHandlerUploadAvatar_NoFile_Returns400(t *testing.T) {
