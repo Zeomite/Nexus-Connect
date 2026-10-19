@@ -89,6 +89,32 @@ func TestHandlerGetByID_ResponseNeverContainsEmailKey(t *testing.T) {
 	assert.False(t, hasEmail, "GET /:userId must never include an email key, regardless of who's asking")
 }
 
+// TestHandlerGetByID_InvalidUUIDFormat_Returns422 pins that a malformed
+// userId is rejected before it ever reaches the DB. Without this, chi's
+// router falls back to this same {userId} handler for ANY unmatched
+// sibling path (e.g. a wrong-method request to /statuses), and an
+// invalid-UUID DB error becomes an uncaught 500 -- a free way for any
+// authenticated client to flood error logs and skew 5xx alerting.
+func TestHandlerGetByID_InvalidUUIDFormat_Returns422(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	rec := doAuthedJSON(t, h.GetByID, http.MethodGet, "00000000-0000-0000-0000-000000000099", "", map[string]string{
+		"userId": "not-a-uuid",
+	})
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+}
+
+func TestHandlerGetStatusByID_InvalidUUIDFormat_Returns422(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	rec := doAuthedJSON(t, h.GetStatusByID, http.MethodGet, "00000000-0000-0000-0000-000000000099", "", map[string]string{
+		"userId": "not-a-uuid",
+	})
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+}
+
 func TestHandlerUpdateMe_DisplayNameOnly_Returns200(t *testing.T) {
 	h, store := newTestHandler(t)
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000062", "updme@example.com", "6000000003", "Old", "online")
@@ -225,6 +251,38 @@ func TestHandlerUploadAvatar_ValidImage_Returns200(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Contains(t, body["profilePictureUrl"], ".png")
+}
+
+// TestHandlerUploadAvatar_OverSizeLimit_Returns413 pins that the 5 MiB
+// cap (WrapWithBodyLimit's maxBytes, see routes.go's avatarUploadMaxBytes)
+// actually fires. http.MaxBytesReader only trips when something reads the
+// body -- UploadAvatar must drain the file part for this to be enforced
+// at all, not just claim the limit in a doc comment.
+func TestHandlerUploadAvatar_OverSizeLimit_Returns413(t *testing.T) {
+	h, store := newTestHandler(t)
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000073", "oversize@example.com", "6000000014", "Oversize", "online")
+
+	const limit = 5 << 20
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreatePart(map[string][]string{
+		"Content-Disposition": {`form-data; name="file"; filename="big.png"`},
+		"Content-Type":        {"image/png"},
+	})
+	require.NoError(t, err)
+	_, err = part.Write(bytes.Repeat([]byte("a"), limit+1024))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	wrapped := httpserver.WrapWithBodyLimit(logger.New("test"), h.UploadAvatar, limit)
+	req := httptest.NewRequest(http.MethodPost, "/", &buf)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	ctx := context.WithValue(req.Context(), platformauth.UserContextKey, platformauth.TokenPayload{UserID: "00000000-0000-0000-0000-000000000073"})
+	req = req.WithContext(ctx)
+	rec := httptest.NewRecorder()
+	wrapped(rec, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 }
 
 // TestHandlerUploadAvatar_DisallowedMimeType_Returns400 pins Review Focus

@@ -2,6 +2,8 @@ package user
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
@@ -72,10 +74,31 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) error {
 	return httpserver.WriteJSON(w, http.StatusOK, profileJSON(profile))
 }
 
+// userIDPathParam validates the {userId} path segment shared by GetByID
+// and GetStatusByID before either reaches the DB. Not a fidelity fix --
+// the original's own Fastify error handler only special-cases its
+// AppError class (server.ts's setErrorHandler), so a malformed
+// AJV-format:uuid failure there ALSO falls through to a generic 500, the
+// same as an unvalidated pgx "invalid input syntax for type uuid" error
+// here (confirmed by reading server.ts directly, not assumed from
+// Fastify's defaults). Added anyway, matching SearchByNumber's own
+// path-param validation (search_handler.go) and this module's
+// established convention of validating before the DB wherever Go's
+// explicit-param-parsing naturally allows it: it closes a free,
+// zero-cost way for any authenticated client to flood error logs and
+// skew 5xx alerting (chi falls back to this handler for ANY unmatched
+// sibling path, e.g. a wrong-method request to /me/status or /statuses).
+type userIDPathParam struct {
+	UserID string `validate:"required,uuid"`
+}
+
 // GetByID uses GetPublicProfile, never GetProfile -- this is the fix for
 // the original's email-leak bug, see this plan's Global Constraints.
 func (h *Handler) GetByID(w http.ResponseWriter, r *http.Request) error {
 	userID := chi.URLParam(r, "userId")
+	if err := validate.Struct(userIDPathParam{UserID: userID}); err != nil {
+		return err
+	}
 	profile, err := h.svc.GetPublicProfile(r.Context(), userID)
 	if err != nil {
 		return err
@@ -132,6 +155,9 @@ func (h *Handler) UpdateMyStatus(w http.ResponseWriter, r *http.Request) error {
 
 func (h *Handler) GetStatusByID(w http.ResponseWriter, r *http.Request) error {
 	userID := chi.URLParam(r, "userId")
+	if err := validate.Struct(userIDPathParam{UserID: userID}); err != nil {
+		return err
+	}
 	status, err := h.svc.GetStatus(r.Context(), userID)
 	if err != nil {
 		return err
@@ -189,6 +215,20 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) error {
 	contentType := part.Header.Get("Content-Type")
 	if !allowedAvatarMimeTypes[contentType] {
 		return apperrors.BadRequest("Invalid file type. Allowed: JPEG, PNG, GIF, WebP", nil)
+	}
+
+	// Service.UploadAvatar never needs the file's bytes (it's a stub that
+	// fabricates a URL, see service_avatar.go), but http.MaxBytesReader
+	// -- installed by routes.go's WrapWithBodyLimit -- only trips when
+	// something actually reads the body. Without draining the part here,
+	// the configured cap (avatarUploadMaxBytes) silently never fires and
+	// an arbitrarily large upload returns 200.
+	if _, err := io.Copy(io.Discard, part); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return apperrors.PayloadTooLarge("File exceeds the maximum upload size")
+		}
+		return apperrors.BadRequest("Invalid request body", nil)
 	}
 
 	ext := extensionForMimeType(contentType)

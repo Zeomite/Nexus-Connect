@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	apperrors "nexus-connect/backend-go/internal/platform/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apperrors "nexus-connect/backend-go/internal/platform/errors"
 )
 
 func TestNotFound_StatusAndCode(t *testing.T) {
@@ -14,6 +14,13 @@ func TestNotFound_StatusAndCode(t *testing.T) {
 	assert.Equal(t, 404, err.StatusCode)
 	assert.Equal(t, "NOT_FOUND", err.Code)
 	assert.Equal(t, "Chat not found", err.Message)
+}
+
+func TestPayloadTooLarge_StatusAndCode(t *testing.T) {
+	err := apperrors.PayloadTooLarge("")
+	assert.Equal(t, 413, err.StatusCode)
+	assert.Equal(t, "PAYLOAD_TOO_LARGE", err.Code)
+	assert.Equal(t, "Payload too large", err.Message)
 }
 
 func TestAppError_MarshalJSON_Shape(t *testing.T) {

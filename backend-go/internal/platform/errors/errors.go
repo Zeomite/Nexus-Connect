@@ -88,6 +88,13 @@ func Validation(message string, details map[string]any) *AppError {
 	return new(422, "VALIDATION_ERROR", message, true, details)
 }
 
+func PayloadTooLarge(message string) *AppError {
+	if message == "" {
+		message = "Payload too large"
+	}
+	return new(413, "PAYLOAD_TOO_LARGE", message, true, nil)
+}
+
 func RateLimit(retryAfterSeconds int) *AppError {
 	return new(429, "RATE_LIMIT_EXCEEDED", "Too many requests", true, map[string]any{"retryAfter": retryAfterSeconds})
 }

@@ -12,7 +12,13 @@ import (
 )
 
 // avatarUploadMaxBytes matches @fastify/multipart's configured 5 MiB
-// limit in backend/services/user-service/src/server.ts.
+// limit in backend/services/user-service/src/server.ts. Not a byte-exact
+// match of the original's semantics, though: Fastify's limits.fileSize
+// caps the FILE only, while WrapWithBodyLimit's http.MaxBytesReader caps
+// the entire request body (multipart boundaries and part headers
+// included, ~200+ bytes of overhead). A file within that overhead of 5
+// MiB that the original would accept is rejected here instead -- narrow
+// enough not to warrant multipart-aware byte accounting just for this.
 const avatarUploadMaxBytes = 5 << 20
 
 // RegisterRoutes mounts every user.routes.ts/search.routes.ts endpoint
