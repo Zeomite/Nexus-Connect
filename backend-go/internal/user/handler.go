@@ -232,11 +232,11 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	ext := extensionForMimeType(contentType)
-	url, err := h.svc.UploadAvatar(r.Context(), callerID(r), ext)
+	avatarURL, err := h.svc.UploadAvatar(r.Context(), callerID(r), ext)
 	if err != nil {
 		return err
 	}
-	return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"profilePictureUrl": url})
+	return httpserver.WriteJSON(w, http.StatusOK, map[string]string{"profilePictureUrl": avatarURL})
 }
 
 func extensionForMimeType(mimeType string) string {

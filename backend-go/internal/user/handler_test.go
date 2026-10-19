@@ -165,6 +165,26 @@ func TestHandlerUpdateMe_NonHTTPSchemeProfilePictureURL_Returns422(t *testing.T)
 	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 }
 
+// TestHandlerUpdateMe_BothFieldsSet_Returns200 pins the wire-layer
+// decode/validate interaction for two simultaneous fields -- the
+// Store layer already covers combining both fields in one UPDATE
+// (store_test.go's TestUpdateProfile_BothFieldsSet), but nothing
+// previously exercised decodeAndValidate/ProfileUpdate construction with
+// both OptionalString and *string set together at the Handler layer.
+func TestHandlerUpdateMe_BothFieldsSet_Returns200(t *testing.T) {
+	h, store := newTestHandler(t)
+	insertTestUser(t, store, "00000000-0000-0000-0000-000000000074", "bothfields@example.com", "6000000015", "Old", "online")
+
+	rec := doAuthedJSON(t, h.UpdateMe, http.MethodPatch, "00000000-0000-0000-0000-000000000074",
+		`{"displayName":"New Name","profilePictureUrl":"https://example.com/new.png"}`, nil)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "New Name", body["displayName"])
+	assert.Equal(t, "https://example.com/new.png", body["profilePictureUrl"])
+}
+
 func TestHandlerUpdateMyStatus_ValidStatus_Returns200(t *testing.T) {
 	h, store := newTestHandler(t)
 	insertTestUser(t, store, "00000000-0000-0000-0000-000000000065", "status1@example.com", "6000000006", "Status1", "offline")
@@ -216,6 +236,23 @@ func TestHandlerGetStatuses_ReturnsMapOfStatuses(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Equal(t, "online", body["statuses"]["00000000-0000-0000-0000-000000000068"])
 	assert.Equal(t, "offline", body["statuses"]["00000000-0000-0000-0000-000000000069"])
+}
+
+// TestHandlerGetStatuses_NonUUIDElement_Returns422 pins that `dive,uuid`
+// (dto.go's statusesRequest.UserIDs) validates PER ELEMENT, not the slice
+// as a whole -- a mix of one valid UUID and one malformed string must
+// still be rejected.
+func TestHandlerGetStatuses_NonUUIDElement_Returns422(t *testing.T) {
+	h, _ := newTestHandler(t)
+
+	reqBody, err := json.Marshal(map[string][]string{
+		"userIds": {"00000000-0000-0000-0000-000000000068", "not-a-uuid"},
+	})
+	require.NoError(t, err)
+
+	rec := doAuthedJSON(t, h.GetStatuses, http.MethodPost, "00000000-0000-0000-0000-000000000099", string(reqBody), nil)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
 }
 
 func TestHandlerUploadAvatar_ValidImage_Returns200(t *testing.T) {
