@@ -4,6 +4,7 @@ package main_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"nexus-connect/backend-go/internal/auth"
 	"nexus-connect/backend-go/internal/platform"
+	"nexus-connect/backend-go/internal/user"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -142,4 +144,49 @@ func TestApp_RegistersAndLogsInThroughTheRealHTTPServer(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+func TestApp_GetsOwnProfileThroughTheRealHTTPServer(t *testing.T) {
+	dsn := setAppEnv(t, 18084)
+
+	app := fxtest.New(t, platform.Module, auth.Module, user.Module, fx.NopLogger)
+	app.RequireStart()
+	defer app.RequireStop()
+
+	registerBody := `{"email":"user-e2e@example.com","password":"SecureP@ss123","displayName":"User E2E"}`
+	regResp, err := http.Post("http://localhost:18084/api/v1/auth/register", "application/json", strings.NewReader(registerBody))
+	require.NoError(t, err)
+	defer regResp.Body.Close()
+	require.Equal(t, http.StatusCreated, regResp.StatusCode)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+	_, err = pool.Exec(context.Background(), "UPDATE users SET email_verified = true WHERE email = $1", "user-e2e@example.com")
+	require.NoError(t, err)
+
+	loginBody := `{"email":"user-e2e@example.com","password":"SecureP@ss123"}`
+	loginResp, err := http.Post("http://localhost:18084/api/v1/auth/login", "application/json", strings.NewReader(loginBody))
+	require.NoError(t, err)
+	defer loginResp.Body.Close()
+	require.Equal(t, http.StatusOK, loginResp.StatusCode)
+
+	var loginResult struct {
+		AccessToken string `json:"accessToken"`
+	}
+	require.NoError(t, json.NewDecoder(loginResp.Body).Decode(&loginResult))
+
+	meReq, err := http.NewRequest(http.MethodGet, "http://localhost:18084/api/v1/users/me", nil)
+	require.NoError(t, err)
+	meReq.Header.Set("Authorization", "Bearer "+loginResult.AccessToken)
+	meResp, err := http.DefaultClient.Do(meReq)
+	require.NoError(t, err)
+	defer meResp.Body.Close()
+	assert.Equal(t, http.StatusOK, meResp.StatusCode)
+
+	var profile struct {
+		Email string `json:"email"`
+	}
+	require.NoError(t, json.NewDecoder(meResp.Body).Decode(&profile))
+	assert.Equal(t, "user-e2e@example.com", profile.Email)
 }
