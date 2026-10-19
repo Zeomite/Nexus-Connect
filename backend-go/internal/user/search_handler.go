@@ -3,6 +3,7 @@ package user
 import (
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	apperrors "nexus-connect/backend-go/internal/platform/errors"
 	"nexus-connect/backend-go/internal/platform/httpserver"
@@ -11,8 +12,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// UniqueNumber uses the "number" tag (digits only, ^[0-9]+$), not
+// "numeric" (which also accepts a leading sign and a decimal point) --
+// the original enforces ^\d{10}$ (search.routes.ts), and "numeric" would
+// silently accept e.g. "-123456789" or "1234567.89" as a valid 10-char
+// unique number.
 type searchByNumberParams struct {
-	UniqueNumber string `validate:"required,len=10,numeric"`
+	UniqueNumber string `validate:"required,len=10,number"`
 }
 
 func (h *Handler) SearchByNumber(w http.ResponseWriter, r *http.Request) error {
@@ -29,14 +35,20 @@ func (h *Handler) SearchByNumber(w http.ResponseWriter, r *http.Request) error {
 }
 
 // SearchByName mirrors search.routes.ts's GET /users: query is required
-// (min 1, max 100 chars); page defaults to 1 and limit to 20 when omitted
-// or zero, matching PaginationSchema's .default(1)/.default(20) — then
-// both are bounds-checked (page positive, limit 1-100) exactly like the
-// Zod schema's .positive()/.min(1).max(100).
+// (min 1, max 100 chars); page defaults to 1 and limit to 20 only when
+// omitted entirely, matching PaginationSchema's .default(1)/.default(20)
+// — an explicit zero is bounds-checked and rejected (422), not defaulted,
+// same as the Zod schema's .positive()/.min(1).max(100) would reject it.
 func (h *Handler) SearchByName(w http.ResponseWriter, r *http.Request) error {
 	query := r.URL.Query().Get("query")
-	if query == "" || len(query) > 100 {
-		return apperrors.Validation("Validation failed", map[string]any{"query": "failed on the 'required' or 'max' rule"})
+	if query == "" {
+		return apperrors.Validation("Validation failed", map[string]any{"query": "failed on the 'required' rule"})
+	}
+	// utf8.RuneCountInString, not len/byte count -- Zod's .max(100) counts
+	// JS string length (runes), and a byte count would wrongly reject
+	// e.g. 51 multi-byte characters that are under the real 100-char cap.
+	if utf8.RuneCountInString(query) > 100 {
+		return apperrors.Validation("Validation failed", map[string]any{"query": "failed on the 'max' rule"})
 	}
 
 	page := 1
